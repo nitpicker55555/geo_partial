@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 import random
 import types
+from typing import Dict, Any
+
 import geo_functions
 from chat_py import *
 from levenshtein import are_strings_similar
@@ -127,13 +129,12 @@ def vice_versa(query, messages=None):
     messages.append(message_template('system', ask_prompt))
     messages.append(message_template('user', query))
     result = chat_single(messages, 'json')
-    # print_modify(result)
-    json_result = json.loads(result)
-    if 'result' in json_result:
-        return json_result['result']
-    else:
-        raise Exception(
-            'no relevant item found for: ' + query + ' in given list.')
+    # Ensure result is a string before loading
+    if isinstance(result, str):
+        json_result = json.loads(result)
+        if 'result' in json_result:
+            return json_result['result']
+    raise Exception(f'Could not process response for: {query}')
 
 
 def string_process(s):
@@ -368,8 +369,11 @@ def pick_match(query_feature_ori, table_name, verbose=False,
         query_list = query_feature.split(" and ")
     else:
         query_list = [query_feature]
-    match_list = {'non_area_col': {'fclass': set(), 'name': set()},
-                  'area_num': None}
+    # Explicitly define the structure for clarity
+    match_list: Dict[str, Any] = {
+        'non_area_col': {'fclass': set(), 'name': set()},
+        'area_num': None
+    }
     for query in query_list:
 
         if query != '':
@@ -385,7 +389,7 @@ def pick_match(query_feature_ori, table_name, verbose=False,
                     continue
 
                 given_list = ids_of_attribute(table_name, col_name,
-                                              bounding_box_coordinats=bounding_box)
+                                              bounding_box_coordinates=bounding_box)
                 query = remove_substrings_from_text(query,
                                                     ['named', 'is', 'which',
                                                      'where', 'has', 'call',
@@ -470,7 +474,7 @@ def pick_match(query_feature_ori, table_name, verbose=False,
 
             else:  # area relate query
 
-                match_list[col_name.replace('#', '')] = extract_numbers(query)
+                match_list['area_num'] = extract_numbers(query)
 
                 continue
 
@@ -755,274 +759,8 @@ def name_cosin_list(query, all_name_set=None):
     return match_list, name_judge_strong
 
 
-def id_list_of_entity_fast(query, verbose=False, bounding_box=None):
-    """
-    Enhanced entity search function that:
-    1. Searches in both fclass (labels) and name collections in chromadb
-    2. Uses LLM to determine if query represents label, name, or intersection
-    3. Returns results using ids_of_type function
-    
-    Args:
-        query (str): Search query string
-        verbose (bool): Enable verbose logging
-        bounding_box: Geographic bounding box for filtering
-        
-    Returns:
-        dict: Results from ids_of_type function
-    """
-    import logging
-    
-    # Setup logging
-    if verbose:
-        logging.basicConfig(level=logging.INFO)
-        logger = logging.getLogger(__name__)
-    else:
-        logger = logging.getLogger(__name__)
-        logger.setLevel(logging.WARNING)
-    
-    logger.info(f"Starting entity search for query: '{query}'")
-    
-    # Input validation and preprocessing
-    if not isinstance(query, str) or not query.strip():
-        raise ValueError("Query must be a non-empty string")
-    
-    # Preprocess query
-    query_original = query
-    query = query.lower().strip()
-    query = query.replace("strasse", 'straße')
-    logger.info(f"Preprocessed query: '{query}'")
-    
-    # Handle bounding box
-    if bounding_box is None:
-        bounding_box = session.get('globals_dict', None)
-    logger.info(f"Using bounding_box: {bounding_box}")
-    
-    # Update global sets if bounding box is provided
-    global all_fclass_set, all_name_set, fclass_dict_4_similarity, name_dict_4_similarity
-    if bounding_box is not None:
-        logger.info("Updating global sets based on bounding box")
-        all_fclass_set = set()
-        all_name_set = set()
-        for table_name in col_name_mapping_dict:
-            # Update fclass set
-            each_set = ids_of_attribute(table_name, bounding_box_coordinats=bounding_box)
-            fclass_dict_4_similarity[table_name] = each_set
-            all_fclass_set.update(each_set)
-            
-            # Update name set (skip soil table)
-            if table_name != 'soil':
-                each_set = ids_of_attribute(table_name, 'name', bounding_box_coordinats=bounding_box)
-                name_dict_4_similarity[table_name] = each_set
-                all_name_set.update(each_set)
-    
-    # Step 1: Search in fclass (labels) collection
-    logger.info("Step 1: Searching in fclass (labels) collection")
-    fclass_matches = {}
-    fclass_confidence = False
-    
-    try:
-        fclass_matches, fclass_confidence = calculate_similarity_chroma(
-            query=query, 
-            give_list=all_fclass_set, 
-            mode='fclass'
-        )
-        logger.info(f"Fclass search results: {len(fclass_matches)} matches, confidence: {fclass_confidence}")
-        if verbose:
-            logger.info(f"Fclass matches: {list(fclass_matches)[:5]}...")  # Show first 5 matches
-    except Exception as e:
-        logger.warning(f"Error in fclass search: {e}")
-        fclass_matches = {}
-    
-    # Step 2: Search in name collection  
-    logger.info("Step 2: Searching in name collection")
-    name_matches = []
-    name_confidence = False
-    
-    try:
-        name_matches, name_confidence = name_cosin_list(query, all_name_set)
-        logger.info(f"Name search results: {len(name_matches)} matches, confidence: {name_confidence}")
-        if verbose:
-            logger.info(f"Name matches: {name_matches[:5]}...")  # Show first 5 matches
-    except Exception as e:
-        logger.warning(f"Error in name search: {e}")
-        name_matches = []
-    
-    # Step 3: Use LLM to determine query intent
-    logger.info("Step 3: Using LLM to determine query intent")
-    query_intent = _determine_query_intent(query_original, fclass_matches, name_matches, logger)
-    logger.info(f"LLM determined query intent: {query_intent}")
-    
-    # Step 4: Find relevant tables for each match type
-    table_fclass_dicts = {}
-    table_name_dicts = {}
-    
-    if fclass_matches and query_intent in ['label', 'intersection']:
-        table_fclass_dicts = find_keys_by_values(fclass_dict_4_similarity, fclass_matches)
-        logger.info(f"Tables found for fclass matches: {list(table_fclass_dicts.keys())}")
-    
-    if name_matches and query_intent in ['name', 'intersection']:
-        table_name_dicts = find_keys_by_values(name_dict_4_similarity, name_matches)
-        logger.info(f"Tables found for name matches: {list(table_name_dicts.keys())}")
-    
-    # Step 5: Determine final tables to search
-    if query_intent == 'intersection':
-        # Find intersection of tables
-        intersection_tables = set(table_fclass_dicts.keys()) & set(table_name_dicts.keys())
-        if not intersection_tables:
-            # If no intersection, use union
-            intersection_tables = set(table_fclass_dicts.keys()) | set(table_name_dicts.keys())
-        logger.info(f"Intersection tables: {list(intersection_tables)}")
-    elif query_intent == 'label':
-        intersection_tables = set(table_fclass_dicts.keys())
-        logger.info(f"Label-only tables: {list(intersection_tables)}")
-    elif query_intent == 'name':
-        intersection_tables = set(table_name_dicts.keys())
-        logger.info(f"Name-only tables: {list(intersection_tables)}")
-    else:
-        intersection_tables = set()
-        logger.warning("No valid intent determined")
-    
-    # Step 6: Collect results from each table
-    all_id_lists = []
-    
-    for table_name in intersection_tables:
-        logger.info(f"Processing table: {table_name}")
-        
-        # Determine what to search for in this table
-        fclass_list = []
-        name_list = []
-        
-        if query_intent in ['label', 'intersection'] and table_name in table_fclass_dicts:
-            fclass_list = table_fclass_dicts[table_name]
-        
-        if query_intent in ['name', 'intersection'] and table_name in table_name_dicts:
-            name_list = table_name_dicts[table_name]
-        
-        # Special handling for intersection mode
-        if query_intent == 'intersection':
-            # For intersection, we need both fclass and name matches
-            if table_name in table_fclass_dicts and table_name in table_name_dicts:
-                fclass_list = table_fclass_dicts[table_name]
-                name_list = table_name_dicts[table_name]
-            elif table_name in table_fclass_dicts:
-                fclass_list = table_fclass_dicts[table_name]
-                name_list = []
-            elif table_name in table_name_dicts:
-                fclass_list = []
-                name_list = table_name_dicts[table_name]
-        
-        logger.info(f"Table {table_name}: fclass_list={len(fclass_list)}, name_list={len(name_list)}")
-        
-        # Call ids_of_type with the determined parameters
-        try:
-            each_id_list = ids_of_type(table_name, {
-                'non_area_col': {
-                    'fclass': set(fclass_list), 
-                    'name': set(name_list)
-                },
-                'area_num': None
-            }, bounding_box=bounding_box)
-            
-            all_id_lists.append(each_id_list)
-            logger.info(f"Retrieved {len(each_id_list.get('id_list', {}))} items from table {table_name}")
-            
-        except Exception as e:
-            logger.error(f"Error retrieving data from table {table_name}: {e}")
-    
-    # Step 7: Merge results
-    if not all_id_lists:
-        logger.warning("No results found for any table")
-        return {'id_list': {}, 'geo_map': {}}
-    
-    merged_result = merge_dicts(all_id_lists)
-    final_count = len(merged_result.get('id_list', {}))
-    logger.info(f"Final merged result: {final_count} total items")
-    
-    if verbose:
-        logger.info(f"Query processing completed successfully")
-        logger.info(f"Original query: '{query_original}'")
-        logger.info(f"Intent: {query_intent}")
-        logger.info(f"Tables searched: {list(intersection_tables)}")
-        logger.info(f"Final result count: {final_count}")
-    
-    return merged_result
-
-
-def _determine_query_intent(query, fclass_matches, name_matches, logger):
-    """
-    Use LLM to determine if query represents label, name, or intersection of both
-    
-    Args:
-        query (str): Original search query
-        fclass_matches (dict/list): Matches found in fclass collection
-        name_matches (list): Matches found in name collection
-        logger: Logger instance
-        
-    Returns:
-        str: 'label', 'name', or 'intersection'
-    """
-    
-    # If only one type has matches, return that type
-    has_fclass_matches = bool(fclass_matches)
-    has_name_matches = bool(name_matches)
-    
-    if has_fclass_matches and not has_name_matches:
-        logger.info("Only fclass matches found, returning 'label'")
-        return 'label'
-    elif has_name_matches and not has_fclass_matches:
-        logger.info("Only name matches found, returning 'name'")
-        return 'name'
-    elif not has_fclass_matches and not has_name_matches:
-        logger.warning("No matches found in either collection")
-        return 'label'  # Default to label search
-    
-    # Both types have matches, use LLM to determine intent
-    try:
-        ask_prompt = """
-        Analyze the search query to determine what the user is looking for.
-        
-        Based on the query, determine if the user is searching for:
-        1. "label" - Searching by category/type/classification (e.g., "restaurants", "schools", "commercial buildings")
-        2. "name" - Searching by specific names (e.g., "McDonald's", "Central Station", "Main Street")  
-        3. "intersection" - Searching for items that match both a specific category AND name (e.g., "Isar river" where "Isar" is the name and "river" is the category)
-        
-        Guidelines:
-        - If the query contains specific proper nouns (names of places, brands, streets), lean towards "name" or "intersection"
-        - If the query is about general categories or types, lean towards "label"
-        - If the query combines a specific name with a category, choose "intersection"
-        - Consider the language and structure of the query
-        
-        Examples:
-        - "restaurants" → "label" 
-        - "McDonald's" → "name"
-        - "Isar river" → "intersection" (Isar is the name, river is the category)
-        - "Main Street" → "name"
-        - "universities" → "label"
-        - "Munich University" → "intersection"
-        - "shopping centers" → "label"
-        - "Bayern Munich stadium" → "intersection"
-        
-        Return only one word: "label", "name", or "intersection"
-        """
-        
-        result = general_gpt_without_memory(ask_prompt=ask_prompt, query=query, json_mode=False, verbose=False)
-        
-        # Clean and validate the result
-        result = result.strip().lower()
-        if result in ['label', 'name', 'intersection']:
-            logger.info(f"LLM determined intent: {result}")
-            return result
-        else:
-            logger.warning(f"LLM returned invalid result: {result}, defaulting to 'intersection'")
-            return 'intersection'
-            
-    except Exception as e:
-        logger.error(f"Error in LLM intent determination: {e}")
-        # Fallback logic
-        if len(query.split()) == 1:
-            return 'label'  # Single word queries are usually categories
-        else:
-            return 'intersection'  # Multi-word queries often combine name and category
+# Function moved to agent_search_fast.py module
+# Import from the new module when needed:
 
 
 def calculate_similarity(query, column='type', table_name=None, bounding_box=None):
@@ -1039,7 +777,7 @@ def calculate_similarity(query, column='type', table_name=None, bounding_box=Non
 
     if table_name:
         give_list = ids_of_attribute(table_name, specific_col=column,
-                                     bounding_box_coordinats=bounding_box)
+                                     bounding_box_coordinates=bounding_box)
     similar_match = calculate_similarity_chroma(query=query, give_list=give_list, mode=column)[0]
     if not similar_match and table_name:
         return ("No similar items found, here are five examples from this table: %s, you need to change your query to "
@@ -1098,12 +836,12 @@ def id_list_of_entity(query, verbose=False, bounding_box=None):
             # i is table name
 
             each_set = ids_of_attribute(i,
-                                        bounding_box_coordinats=bounding_box)
+                                        bounding_box_coordinates=bounding_box)
             fclass_dict_4_similarity[i] = each_set
             all_fclass_set.update(each_set)
             if i != 'soil':
                 each_set = ids_of_attribute(i, 'name',
-                                            bounding_box_coordinats=bounding_box)
+                                            bounding_box_coordinates=bounding_box)
                 name_dict_4_similarity[i] = each_set
                 all_name_set.update(each_set)
 
@@ -1153,6 +891,7 @@ The final result should be stored in a variable called `final_id_list` (which is
     namespace["final_id_list"] = []
     messages = messages_initial_template(sys_prompt, query)
     round_num = 0
+    merged_id_list = {} # Initialize to prevent unbound error
     while round_num <= 10:
         round_num += 1
         code_result = chat_single(messages,temperature=0.5)
@@ -1171,10 +910,10 @@ The final result should be stored in a variable called `final_id_list` (which is
         messages.append(message_template('user', str(code_return)))
 
         if 'final_id_list' in namespace:
-            if len(namespace["final_id_list"]) != 0:
-                if 'traceback' not in code_return.lower():
-                    merged_id_list = merge_dicts(namespace["final_id_list"])
-                    break
+            if namespace["final_id_list"]:
+                 if 'traceback' not in str(code_return).lower():
+                     merged_id_list = merge_dicts(namespace["final_id_list"])
+                     break
 
     return merged_id_list
 
@@ -1214,12 +953,12 @@ def data_intersection_id_list(query, bounding_box=None):
             # i is table name
 
             each_set = ids_of_attribute(i,
-                                        bounding_box_coordinats=bounding_box)
+                                        bounding_box_coordinates=bounding_box)
             fclass_dict_4_similarity[i] = each_set
             all_fclass_set.update(each_set)
             if i != 'soil':
                 each_set = ids_of_attribute(i, 'name',
-                                            bounding_box_coordinats=bounding_box)
+                                            bounding_box_coordinates=bounding_box)
                 name_dict_4_similarity[i] = each_set
                 all_name_set.update(each_set)
 
@@ -1397,8 +1136,10 @@ def geo_filter(query, id_list_subject, id_list_object, bounding_box=None):
     if versa_sign:
         query = query.replace(negation_word, '')
     geo_relation = judge_geo_relation(query)
-    # print_modify( geo_relation['type'])
-    # print_modify(id_list_subject)
+    if geo_relation is None:
+        # Handle case where no relation is found
+        return {'error': 'No geographical relation found in query.'}
+    
     geo_result = geo_calculate(id_list_subject, id_list_object,
                                geo_relation['type'], geo_relation['num'],
                                versa_sign=versa_sign,
@@ -1453,9 +1194,9 @@ def set_bounding_box(region_name, query=None):
         return {'geo_map': ''}
 
     bounding_box_dict["bounding_box_region_name"] = region_name
-    bounding_box_dict['bounding_coordinates'], bounding_box_dict[
-        'bounding_wkb'], response_str = find_boundbox(region_name)
-
+    coords, wkb_hex, response_str = find_boundbox(region_name)
+    bounding_box_dict['bounding_coordinates'] = coords
+    bounding_box_dict['bounding_wkb'] = wkb_hex
     geo_dict = {
         bounding_box_dict["bounding_box_region_name"]: (
             wkb.loads(bytes.fromhex((bounding_box_dict['bounding_wkb']))))}

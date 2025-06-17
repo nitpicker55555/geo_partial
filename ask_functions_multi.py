@@ -406,7 +406,7 @@ def pick_match(query_feature_ori, table_name, verbose=False,
                     continue
 
                 given_list = ids_of_attribute(table_name, col_name,
-                                              bounding_box_coordinats=bounding_box)
+                                              bounding_box_coordinates=bounding_box)
                 query = remove_substrings_from_text(query,
                                                     ['named', 'is', 'which',
                                                      'where', 'has', 'call',
@@ -827,7 +827,7 @@ def calculate_similarity(query, column='type', table_name=None, bounding_box=Non
 
     if table_name:
         give_list = ids_of_attribute(table_name, specific_col=column,
-                                     bounding_box_coordinats=bounding_box)
+                                     bounding_box_coordinates=bounding_box)
     similar_match = calculate_similarity_chroma(query=query, give_list=give_list, mode=column)[0]
     if not similar_match and table_name:
         return ("No similar items found, here are five examples from this table: %s, you need to change your query to "
@@ -939,12 +939,12 @@ def id_list_of_entity(query, verbose=False, bounding_box=None):
             # i is table name
 
             each_set = ids_of_attribute(i,
-                                        bounding_box_coordinats=bounding_box)
+                                        bounding_box_coordinates=bounding_box)
             fclass_dict_4_similarity[i] = each_set
             all_fclass_set.update(each_set)
             if i != 'soil':
                 each_set = ids_of_attribute(i, 'name',
-                                            bounding_box_coordinats=bounding_box)
+                                            bounding_box_coordinates=bounding_box)
                 name_dict_4_similarity[i] = each_set
                 all_name_set.update(each_set)
 
@@ -1072,12 +1072,12 @@ def data_intersection_id_list(query, bounding_box=None):
             # i is table name
 
             each_set = ids_of_attribute(i,
-                                        bounding_box_coordinats=bounding_box)
+                                        bounding_box_coordinates=bounding_box)
             fclass_dict_4_similarity[i] = each_set
             all_fclass_set.update(each_set)
             if i != 'soil':
                 each_set = ids_of_attribute(i, 'name',
-                                            bounding_box_coordinats=bounding_box)
+                                            bounding_box_coordinates=bounding_box)
                 name_dict_4_similarity[i] = each_set
                 all_name_set.update(each_set)
 

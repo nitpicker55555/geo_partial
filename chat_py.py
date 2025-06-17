@@ -16,8 +16,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-#
-os.environ['OPENAI_API_KEY'] = os.getenv("OPENAI_API_KEY")
 
 # os.environ['OPENAI_API_KEY'] = os.getenv("hub_api_key")
 # os.environ['OPENAI_BASE_URL'] = "https://api.openai-hub.com/v1"
@@ -94,7 +92,7 @@ def chat_single(messages, mode="", model='gpt-4o', temperature=0,verbose=False):
     return response.choices[0].message.content
 
 
-def general_gpt_without_memory(query='', messages=None,json_mode='',ask_prompt='',temperature=0,verbose=False):
+def general_gpt_without_memory(query='', messages=None, json_mode='', sys_prompt='', temperature=0, verbose=False):
     if isinstance(query, dict):
         query = str(query)
     if query == None:
@@ -103,7 +101,7 @@ def general_gpt_without_memory(query='', messages=None,json_mode='',ask_prompt='
         messages = []
 
 
-        messages.append(message_template('system', ask_prompt))
+        messages.append(message_template('system', sys_prompt))
         messages.append(message_template('user', str(query)))
     # result = chat_single(messages, '','gpt-4o-2024-05-13')
     result = chat_single(messages, json_mode,temperature=temperature)

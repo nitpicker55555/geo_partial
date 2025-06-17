@@ -227,16 +227,16 @@ def cur_action(query, mode='query'):
         raise Exception(f"SQL error: {e}")
 
 
-def ids_of_attribute(graph_name, specific_col=None, bounding_box_coordinats=None):
+def ids_of_attribute(graph_name, specific_col=None, bounding_box_coordinates=None):
     # print('bounding_box_coordinats',bounding_box_coordinats)
     # print('specific_col',specific_col)
 
     attributes_set = set()
     # print(col_name_mapping_dict.keys())
     fclass = col_name_mapping_dict[graph_name]['fclass']
-    if bounding_box_coordinats:
-        bounding_box_coordinats = bounding_box_coordinats['bounding_coordinates']
-        min_lat, max_lat, min_lon, max_lon = bounding_box_coordinats
+    if bounding_box_coordinates:
+        bounding_box_coordinates = bounding_box_coordinates['bounding_coordinates']
+        min_lat, max_lat, min_lon, max_lon = bounding_box_coordinates
         bounding_judge_query = f"ST_Intersects(geom, ST_MakeEnvelope({min_lon}, {min_lat}, {max_lon}, {max_lat}, {4326}))"
     else:
         bounding_judge_query = ''
@@ -311,34 +311,8 @@ ids_of_type('landuse',a)
     {bounding_judge_query}
     {fclass_row}
     """
-    # queries.append(bounding_query)
 
-    # print(bounding_query)
-
-    # final_query = "UNION ALL".join(queries)
-    # print("bounding_query",bounding_query)
     rows = cur_action(bounding_query)
-    # print("len(rows)",len(rows))
-    # print("len(rows)",rows[:10])
-    result_dict = {}
-
-    # for row in tqdm(rows):
-    #
-    #
-    #     # result_dict[row[2] + "_" + row[3]+"_"+row[4]] = mapping(wkb.loads(bytes.fromhex(row[6])))
-    # if graph_name=='soil':
-    #     # soil 没有name
-    #
-    #     result_dict['soil' + "_" + str(row[0]) + "_" + str(row[1])] = (wkb.loads(bytes.fromhex(row[-1]))) #result_dict _分割的前两位是展示在地图上的
-    #     global_id_attribute['soil' + "_" + str(row[0]) + "_" + str(row[1])]=  str(row[0])
-    #
-    # else:
-    #     #     select_query=f'SELECT {fclass},name,{osm_id},geom'
-    #     result_dict[graph_name+ "_" + str(row[1])+"_"+str(row[2])+"_"+str(row[3])] = (wkb.loads(bytes.fromhex(row[-1])))
-    #     global_id_attribute[graph_name+ "_" + str(row[1])+"_"+str(row[2])+"_"+str(row[3])] =  str(row[1]+str(row[2]))
-    #
-    #
-    #     global_id_geo.update(result_dict)
 
     if graph_name == 'soil':
         # soil 没有name
@@ -372,7 +346,7 @@ ids_of_type('landuse',a)
     # print('len result_dict',len(result_dict))
     global_id_geo.update(result_dict)
     feed_back = result_dict
-    # print(len(feed_back))
+
     if type_dict['area_num'] != None:
         feed_back = area_filter(feed_back, type_dict['area_num'])['id_list']  #计算面积约束
         print(len(feed_back), 'area_num', type_dict['area_num'])

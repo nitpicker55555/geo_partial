@@ -22,6 +22,7 @@ from io import StringIO
 from datetime import datetime
 from flask_socketio import SocketIO, emit
 from ask_functions_agent import *
+from agent_search_fast import id_list_of_entity_fast
 
 # from repair_data import repair,crs_transfer
 # from shape2ttf import shapefile_to_ttl
@@ -474,6 +475,22 @@ def process_text_2code(lines, session, sid):
                     close_parens += lines[j].count(')')
                     j += 1
 
+                # Inject bounding_box from session if id_list_of_entity_fast is called
+                if 'id_list_of_entity_fast(' in full_function and 'bounding_box=' not in full_function:
+                    last_paren_index = full_function.rfind(')')
+                    if last_paren_index != -1:
+                        # Check if there are existing arguments to decide if a comma is needed
+                        open_paren_index = full_function.find('(')
+                        content_between_parens = full_function[open_paren_index + 1:last_paren_index].strip()
+                        separator = ", " if content_between_parens else ""
+                        
+                        # Inject the bounding_box parameter
+                        full_function = (
+                            full_function[:last_paren_index]
+                            + f"{separator}bounding_box=session['globals_dict']"
+                            + full_function[last_paren_index:]
+                        )
+
                 variable_dict[variable_str] = full_function
                 comment_index = find_insert_comment_position(lines, lines[i], session['template'])
                 new_lines.append(full_function)
@@ -494,6 +511,22 @@ def process_text_2code(lines, session, sid):
                     close_parens += lines[j].count(')')
                     j += 1
 
+                # Inject bounding_box from session if id_list_of_entity_fast is called
+                if 'id_list_of_entity_fast(' in full_function and 'bounding_box=' not in full_function:
+                    last_paren_index = full_function.rfind(')')
+                    if last_paren_index != -1:
+                        # Check if there are existing arguments to decide if a comma is needed
+                        open_paren_index = full_function.find('(')
+                        content_between_parens = full_function[open_paren_index + 1:last_paren_index].strip()
+                        separator = ", " if content_between_parens else ""
+
+                        # Inject the bounding_box parameter
+                        full_function = (
+                            full_function[:last_paren_index]
+                            + f"{separator}bounding_box=session['globals_dict']"
+                            + full_function[last_paren_index:]
+                        )
+
                 comment_index = find_insert_comment_position(lines, lines[i])
                 new_lines.append(f"temp_result = {full_function}")
                 new_lines.append(f"send_data(temp_result['geo_map'], 'map', '{comment_index}', sid='{sid}')")
@@ -502,7 +535,7 @@ def process_text_2code(lines, session, sid):
                 new_lines.append(each_line)
                 i += 1
 
-        # Handle the last line if it’s a variable or needs print_process
+        # Handle the last line if it's a variable or needs print_process
         if new_lines and '=' not in new_lines[-1] and 'send_data' not in new_lines[-1] and 'id_list_explain(' not in \
                 new_lines[-1] and '#' not in new_lines[-1]:
             # if new_lines[-1].strip() in variable_dict:
