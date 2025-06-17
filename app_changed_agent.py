@@ -1,94 +1,137 @@
 # -*- coding: utf-8 -*-
 
 import traceback
+import json
+import re
+import time
+import sys
+from io import StringIO
+from datetime import datetime
 
-from shapely.geometry import Polygon, mapping
-
+from shapely.geometry import Polygon, mapping, shape
 from flask import Flask, Response, stream_with_context, request, render_template, jsonify, session, redirect, url_for
-
+from flask_socketio import SocketIO, emit
 from openai import OpenAI
 import os
 from dotenv import load_dotenv
 import ast
 from user_agents import parse
 import requests
+from pyproj import Transformer
+import pyproj
 
-# import logging
-load_dotenv()
-api_key = os.getenv('OPENAI_API_KEY')
-client = OpenAI()
-import sys
-from io import StringIO
-from datetime import datetime
-from flask_socketio import SocketIO, emit
 from ask_functions_agent import *
 from agent_search_fast import id_list_of_entity_fast
 
-# from repair_data import repair,crs_transfer
-# from shape2ttf import shapefile_to_ttl
-output = StringIO()
-original_stdout = sys.stdout
-app = Flask(__name__)
-# app.logger.setLevel(logging.WARNING)
+# Environment setup
+load_dotenv()
+api_key = os.getenv('OPENAI_API_KEY')
+client = OpenAI()
 
-app.secret_key = 'secret_key'  # 用于启用 flash() 方法发送消息
+# Flask app configuration
+app = Flask(__name__)
+app.secret_key = 'secret_key'
+
+# File upload configuration
 UPLOAD_FOLDER = 'uploads'
+ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'doc', 'docx', 'xlsx', 'csv', 'ttl'}
+MAX_FILE_SIZE = 500 * 1024 * 1024  # 500MB
+
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = MAX_FILE_SIZE
+
+# Create upload directory if it doesn't exist
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
+
+# Global variables for stdout redirection
+output = StringIO()
+original_stdout = sys.stdout
+
+# SocketIO setup
+socketio = SocketIO(app, manage_session=True, async_mode='threading')
+
+# Initialize geo_functions globals
+geo_functions.global_id_attribute = {}
+geo_functions.global_id_geo = {}
+
+# Load GeoJSON data on startup
+def load_geojson_data():
+    """Load all GeoJSON files into memory for faster access."""
+    geojson_files = {
+        '1': 'buildings_geojson.geojson',
+        '2': 'land_geojson.geojson', 
+        '3': 'soil_maxvorstadt_geojson.geojson',
+        '4': 'points_geojson.geojson',
+        '5': 'lines_geojson.geojson',
+    }
+    
+    geojson_data = {}
+    for key, filepath in geojson_files.items():
+        try:
+            with open(f'static/geojson/{filepath}', 'r', encoding='utf-8') as file:
+                geojson_data[key] = json.load(file)
+        except FileNotFoundError:
+            print(f"Warning: GeoJSON file {filepath} not found")
+            geojson_data[key] = {}
+    
+    return geojson_data
+
+geojson_data = load_geojson_data()
 
 
 @app.before_request
 def initialize_session():
+    """Initialize session variables if they don't exist."""
     if 'globals_dict' not in session:
-        session['globals_dict'] = {'bounding_box_region_name': 'Munich',
-                                   'bounding_coordinates': [48.061625, 48.248098, 11.360777, 11.72291],
-                                   'bounding_wkb': '01030000000100000005000000494C50C3B7B82640D9CEF753E3074840494C50C3B7B82640FC19DEACC11F484019E76F4221722740FC19DEACC11F484019E76F4221722740D9CEF753E3074840494C50C3B7B82640D9CEF753E3074840'}
-
-
-        print('session 初始化')
-
-
-geo_functions.global_id_attribute = {}
-geo_functions.global_id_geo = {}
-
-# global_variables = {}
-
-# 示例的 Markdown 文本（包含图片链接）
-# ![示例图片](/static/data.png "这是一个示例图片")
-socketio = SocketIO(app, manage_session=True, async_mode='threading')
-
-
-# async def async_task(news):
-#     # 你的异步代码
-#     print(search.run(news))
-#
-# def search_internet(news):
-#     # 使用 eventlet 来 "模拟" 异步操作
-#     pool = eventlet.GreenPool()
-#     pool.spawn(async_task,news)
-#     pool.waitall()
+        session['globals_dict'] = {
+            'bounding_box_region_name': 'Munich',
+            'bounding_coordinates': [48.061625, 48.248098, 11.360777, 11.72291],
+            'bounding_wkb': '01030000000100000005000000494C50C3B7B82640D9CEF753E3074840494C50C3B7B82640FC19DEACC11F484019E76F4221722740FC19DEACC11F484019E76F4221722740D9CEF753E3074840494C50C3B7B82640D9CEF753E3074840'
+        }
+        print('Session initialized')
 
 
 @socketio.on('join')
 def on_join(data):
+    """Handle WebSocket join event."""
     session['sid'] = request.sid
     send_data(session['sid'], 'sid', sid=session['sid'])
 
-    # print(session['username'])
 
+# Route handlers
+@app.route('/')
+def home():
+    """Main homepage route."""
+    print("Initializing application")
+    del_uploaded_sql()
 
-geojson_files = {
-    '1': 'buildings_geojson.geojson',
-    '2': 'land_geojson.geojson',
-    '3': 'soil_maxvorstadt_geojson.geojson',
-    '4': 'points_geojson.geojson',
-    '5': 'lines_geojson.geojson',
-}
-geojson_data = {}
+    # Initialize session variables
+    session.update({
+        'file_path': '',
+        'ip_': request.remote_addr,
+        'uploaded_indication': None,
+        'sid': '',
+        'globals_dict': None,
+        'template': False,
+        'history': []
+    })
 
-for key, filepath in geojson_files.items():
-    with open('static/geojson' + '/' + filepath, 'r', encoding='utf-8') as file:
-        geojson_data[key] = json.load(file)
+    # Parse user agent
+    user_agent_string = request.headers.get('User-Agent')
+    if user_agent_string:
+        user_agent = parse(user_agent_string)
+        session.update({
+            'os': user_agent.os.family,
+            'browser': user_agent.browser.family,
+            'device_type': 'Mobile' if user_agent.is_mobile else 
+                          'Tablet' if user_agent.is_tablet else 
+                          'Desktop' if user_agent.is_pc else 'Unknown'
+        })
+    else:
+        session.update({'os': None, 'browser': None, 'device_type': None})
+
+    return render_template('index.html')
 
 
 @app.route('/introduction')
@@ -101,8 +144,19 @@ def send_geojson(key):
     return jsonify(geojson_data.get(key, {}))
 
 
+@app.route('/question')
+def question():
+    return render_template('question.html')
+
+
+@app.route('/thank_you')
+def thank_you():
+    return render_template('thank_you.html')
+
+
 @app.route('/submit-qu', methods=['POST'])
 def submit_qu():
+    """Handle questionnaire submission."""
     start_time = request.form.get('start_time')
     end_time = time.time()
     ip_address = request.remote_addr
@@ -115,470 +169,291 @@ def submit_qu():
         'answers': answers
     }
 
-    with open('responses.jsonl', 'a') as f:
+    with open('responses.jsonl', 'a', encoding='utf-8') as f:
         f.write(json.dumps(response_data) + '\n')
 
     return redirect(url_for('thank_you'))
 
 
-@app.route('/thank_you')
-def thank_you():
-    return render_template('thank_you.html')
+@app.route('/debug_mode', methods=['POST'])
+def debug_mode():
+    """Toggle debug mode."""
+    data = request.get_json().get('message')
+    session['template'] = (data == 'debug')
+    return jsonify({"text": True})
 
 
-@app.route('/question')
-def question():
-    return render_template('question.html')
+@app.errorhandler(413)
+def request_entity_too_large(error):
+    return jsonify({"error": "The file is too large. Maximum file size is 500MB."}), 413
 
 
-def complete_json(input_stream):
-    """
-    尝试补全一个不完整的JSON字符串，包括双引号和括号。
-
-    参数:
-    - input_stream: 一个可能不完整的JSON字符串
-
-    返回:
-    - 完整的JSON对象
-    """
-    brackets = {'{': '}', '[': ']'}
-    quotes = {'"': '"'}
-    stack = []
-    in_string = False
-
-    # 尝试解析JSON，如果失败则补全
-    try:
-        return json.loads(input_stream)
-    except json.JSONDecodeError:
-        pass  # 继续到补全逻辑
-
-    # 逐字符遍历输入字符串
-    for char in input_stream:
-        if char in quotes and not in_string:
-            # 进入字符串
-            in_string = True
-            stack.append(quotes[char])
-        elif char in quotes and in_string:
-            # 结束字符串
-            in_string = False
-            stack.pop()
-        elif char in brackets and not in_string:
-            # 进入对象或数组
-            stack.append(brackets[char])
-        elif stack and char == stack[-1] and not in_string:
-            # 退出对象或数组
-            stack.pop()
-
-    # 补全字符串
-    if in_string:
-        input_stream += '"'
-        stack.pop()
-
-    # 根据栈中剩余的括号补全JSON
-    while stack:
-        input_stream += stack.pop()
-
-    # 再次尝试解析补全后的JSON
-    return json.loads(input_stream)
-
-
-# html_content = markdown2.markdown(markdown_text)
-def reorder_relations(relations):
-    for relation in relations:
-        if 0 not in (relation['head'], relation['tail']):
-            break
-    else:
-        # 0 simultaneously exists in all dictionaries
-        return relations
-
-    reordered_relations = []
-    zero_relation = None
-    for relation in relations:
-        if 0 in (relation['head'], relation['tail']):
-            zero_relation = relation
-        else:
-            reordered_relations.append(relation)
-
-    if zero_relation:
-        reordered_relations.append(zero_relation)
-
-    return reordered_relations
+# Utility functions
+def allowed_file(filename):
+    """Check if uploaded file has allowed extension."""
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
 def extract_code_blocks(code_str):
+    """Extract Python code blocks from markdown text."""
     code_blocks = []
     parts = code_str.split("```python")
-    for part in parts[1:]:  # 跳过第一个部分，因为它在第一个代码块之前
+    for part in parts[1:]:
         code_block = part.split("```")[0]
         code_blocks.append(code_block)
     return code_blocks
 
 
 def len_str2list(result):
-    if result == None:
+    """Get length of result, handling different data types."""
+    if result is None:
         return 0
-    # result=result.replace("None","").replace(" ","")
+    
     try:
-        # 尝试使用 ast.literal_eval 解析字符串
         result = ast.literal_eval(result)
-        # 检查解析结果是否为列表
-        if result != None:
-            if not isinstance(result, int):
-                return len(result)
-            else:
-                return result
-        else:
-            return ''
+        if result is not None:
+            return len(result) if not isinstance(result, int) else result
+        return ''
     except (ValueError, SyntaxError):
-        # 如果解析时发生错误，说明字符串不是有效的列表字符串
         try:
             dict_result = json.loads(result)
             return len(dict_result)
         except:
-
-            return str(len(result)) + "(String)"
+            return f"{len(result)}(String)"
 
 
 def judge_list(result):
+    """Check if result can be evaluated as a list."""
     try:
-        # 尝试使用 ast.literal_eval 解析字符串
-        result = ast.literal_eval(result)
-        # 检查解析结果是否为列表
+        ast.literal_eval(result)
         return True
     except (ValueError, SyntaxError):
-        # 如果解析时发生错误，说明字符串不是有效的列表字符串
         return False
 
 
 def details_span(result, run_time):
-    if result == None:
+    """Format execution result for display."""
+    if result is None:
         result = "None"
-    pattern = r"An error occurred:.*\)"
-    match = re.search(pattern, result)
-
-    if match:
-        error_message = match.group(0)
-        aa = error_message
-        return {'error': result + " \n " + aa}
-    else:
-        length = len_str2list(str(result))
-        attention = ''
-        if 'String' not in str(length) and int(length) > 10000:
-            attention = 'Due to the large volume of data, visualization may take longer.'
-            if int(length) == 20000:
-                attention = 'Due to the large volume of data in your current search area, only 20,000 entries are displayed.'
-        aa = f"""
-\n
+    
+    error_pattern = r"An error occurred:.*\)"
+    if re.search(error_pattern, result):
+        return {'error': result}
+    
+    length = len_str2list(str(result))
+    attention = ''
+    if 'String' not in str(length) and int(length) > 10000:
+        attention = 'Due to the large volume of data, visualization may take longer.'
+        if int(length) == 20000:
+            attention = 'Due to the large volume of data in your current search area, only 20,000 entries are displayed.'
+    
+    formatted_result = f"""
 <details>
-    <summary>`Code result: Length:{length},Run_time:{round(run_time, 2)}s`</summary>
+    <summary>`Code result: Length:{length}, Run_time:{round(run_time, 2)}s`</summary>
        {str(result)}
 </details>
 {attention}
-
-
-            """
-
-        return {'normal': aa}
+"""
+    return {'normal': formatted_result}
 
 
 def short_response(text_list):
+    """Truncate long responses for better display."""
     if len(str(text_list)) > 1000 and judge_list(text_list):
         if len_str2list(text_list) < 40:
             result = ast.literal_eval(text_list)
-            short_suitable_types = [t[:35] for t in result]
-            return str(short_suitable_types)
-        else:
-            return text_list[:600]
-    else:
+            return str([t[:35] for t in result])
         return text_list[:600]
-
-
-# 设置文件上传的目录和大小限制
-UPLOAD_FOLDER = './uploads'
-ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'doc', 'docx', 'xlsx', 'csv', 'ttl'}
-MAX_FILE_SIZE = 500 * 1024 * 1024  # 50MB
-
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = MAX_FILE_SIZE
-
-
-def allowed_file(filename):
-    return '.' in filename and \
-           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-
-
-# @app.route('/upload', methods=['POST'])
-# def upload_file():
-#     if 'file' not in request.files:
-#         return jsonify({"error": "No file part"}), 400
-#     file = request.files['file']
-#     if file.filename == '':
-#         return jsonify({"error": "No selected file"}), 400
-#     if file and allowed_file(file.filename):
-#         filename = secure_filename(file.filename)
-#         file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
-#         session['uploaded_indication'] = filename
-#         return jsonify({"filename": filename}), 200
-#     else:
-#         return jsonify({"error": "File type not allowed"}), 400
-
-
-@app.route('/debug_mode', methods=['POST'])
-def debug_mode():
-    data = request.get_json().get('message')  # 获取JSON数据
-    if data == 'debug':
-        session['template'] = True
-    else:
-        session['template'] = False
-    return jsonify({"text": True}), 400
-
-
-@app.errorhandler(413)
-def request_entity_too_large(error):
-    return jsonify({"error": "The file is too large. Maximum file size is 50MB."}), 413
-
-
-@app.route('/')
-def home():
-
-    print("initial")
-    del_uploaded_sql()
-
-    ip_ = request.remote_addr
-    session['file_path']=''
-    session['ip_'] = ip_
-    session['uploaded_indication'] = None
-    session['sid'] = ''
-
-    user_agent_string = request.headers.get('User-Agent')
-    if user_agent_string:
-        user_agent = parse(user_agent_string)
-
-        os = user_agent.os.family
-        browser = user_agent.browser.family
-        if user_agent.is_mobile:
-            device_type = 'Mobile'
-        elif user_agent.is_tablet:
-            device_type = 'Tablet'
-        elif user_agent.is_pc:
-            device_type = 'Desktop'
-        else:
-            device_type = 'Unknown'
-        session['os'] = os
-        session['browser'] = browser
-        session['device_type'] = device_type
-    else:
-        session['os'] = None
-        session['browser'] = None
-        session['device_type'] = None
-    session['globals_dict']=None
-    session['template'] = False
-    session['history'] = []
-    return render_template('index.html')
+    return text_list[:600]
 
 
 def polygons_to_geojson(polygons_dict):
-    """
-    将键值都为Polygon对象的字典转换为键值都为GeoJSON的字典。
-
-    :param polygons_dict: 一个键值都为Polygon对象的字典。
-    :return: 一个键值都为GeoJSON格式的字典。
-    """
-    geojson_dict = {}
-    for key, polygon in polygons_dict.items():
-        # 将每个Polygon对象转换为GeoJSON格式的字典
-        geojson_dict[key] = mapping(polygon)
-    return geojson_dict
+    """Convert polygon objects to GeoJSON format."""
+    return {key: mapping(polygon) for key, polygon in polygons_dict.items()}
 
 
 def send_data(data, mode="data", index="", sid=''):
+    """Send data via WebSocket."""
     target_labels = []
-    if mode == "map":
-
-        if not isinstance(data, str) and len(data) != 0:
-            if 'target_label' in data:
-                target_labels = data['target_label']
-                data.pop('target_label')
-            data = polygons_to_geojson(data)
-    if sid != '':
+    if mode == "map" and not isinstance(data, str) and len(data) != 0:
+        if 'target_label' in data:
+            target_labels = data.pop('target_label')
+        data = polygons_to_geojson(data)
+    
+    if sid:
         socketio.emit('text', {mode: data, 'index': index, 'target_label': target_labels}, room=sid)
     else:
-        print('no sid')
+        print('No session ID provided')
 
 
 def find_insert_comment_position(multiline_str, code_line, mode=False):
+    """Find the position to insert comments in code."""
     lines = multiline_str
-    comment_positions = []
-    if mode:
-        normal_special_char = '#><;'
-    else:
-        normal_special_char = '#'
-
-    for i, line in enumerate(lines):
-        if line.strip().startswith("#"):
-            comment_positions.append((i, line.strip()))
-
+    special_char = '#><;' if mode else '#'
+    
+    comment_positions = [(i, line.strip()) for i, line in enumerate(lines) 
+                        if line.strip().startswith("#")]
+    
+    code_line_index = lines.index(code_line) if code_line in lines else -1
+    
     for idx, (pos, comment) in enumerate(comment_positions):
         if idx + 1 < len(comment_positions):
-            next_comment_pos = comment_positions[idx + 1][0]
-            if pos < lines.index(code_line) < next_comment_pos:
-                return comment.replace(normal_special_char, '').replace("'", '').strip()
+            next_pos = comment_positions[idx + 1][0]
+            if pos < code_line_index < next_pos:
+                return comment.replace(special_char, '').replace("'", '').strip()
         else:
-            if pos < lines.index(code_line):
-                return comment.replace(normal_special_char, '').replace("'", '').strip()
+            if pos < code_line_index:
+                return comment.replace(special_char, '').replace("'", '').strip()
+    
+    return ""
 
-    result = (-1, "")
-    return result[1][4:].strip()
 
 def print_function(var_name):
-    if len(str(var_name))>4000:
-        print("What you want to print is too long, it is a %s, its length is %s"%(type(var_name).__name__, len(var_name)))
+    """Custom print function with length limiting."""
+    if len(str(var_name)) > 4000:
+        print(f"Output too long: {type(var_name).__name__}, length: {len(var_name)}")
     else:
         print(var_name)
+
+
 def process_text_2code(lines, session, sid):
+    """
+    Process code string, insert send_data calls, optimize format, and return final code string.
 
-        """
-        处理代码字符串，插入 send_data 调用，优化格式，并返回最终的代码字符串。
+    Parameters:
+        lines (str): Original code string
+        session (dict): Session data containing template information
+        sid (str): Session ID
 
-        参数:
-            lines (str): 原始代码字符串
-            session (dict): 包含模板信息的会话数据
-            sid (str): 会话 ID
+    Returns:
+        str: Processed code string
+    """
+    # Possible function calls
+    lines = lines.split('\n')
+    filtered_lst = [item for item in lines if item.strip()]
+    lines = filtered_lst
+    new_lines = []
+    variable_dict = {}
+    i = 0
 
-        返回:
-            str: 处理后的代码字符串
-        """
-        # 可能包含的函数调用
-        lines = lines.split('\n')
-        filtered_lst = [item for item in lines if item.strip()]
-        lines = filtered_lst
-        new_lines = []
-        variable_dict = {}
-        i = 0
+    while i < len(lines):
+        each_line = lines[i].strip()
+        # Check if this is a multi-line function call
+        if '=' in each_line and any(func in each_line for func in
+                                    ['geo_filter(', 'id_list_of_entity(','id_list_of_entity_fast(', 'add_or_subtract_entities(',
+                                     'area_filter(', 'set_bounding_box(','traffic_navigation(']):
+            variable_str = each_line.split('=')[0].strip()
+            full_function = each_line
+            open_parens = full_function.count('(')
+            close_parens = full_function.count(')')
+            j = i + 1
 
-        while i < len(lines):
-            each_line = lines[i].strip()
-            # Check if this is a multi-line function call
-            if '=' in each_line and any(func in each_line for func in
-                                        ['geo_filter(', 'id_list_of_entity(','id_list_of_entity_fast(', 'add_or_subtract_entities(',
-                                         'area_filter(', 'set_bounding_box(','traffic_navigation(']):
-                variable_str = each_line.split('=')[0].strip()
-                full_function = each_line
-                open_parens = full_function.count('(')
-                close_parens = full_function.count(')')
-                j = i + 1
+            # Collect multi-line function call
+            while j < len(lines) and open_parens > close_parens:
+                full_function += '\n' + lines[j]
+                open_parens += lines[j].count('(')
+                close_parens += lines[j].count(')')
+                j += 1
 
-                # Collect multi-line function call
-                while j < len(lines) and open_parens > close_parens:
-                    full_function += '\n' + lines[j]
-                    open_parens += lines[j].count('(')
-                    close_parens += lines[j].count(')')
-                    j += 1
+            # Inject bounding_box from session if id_list_of_entity_fast is called
+            if 'id_list_of_entity_fast(' in full_function and 'bounding_box=' not in full_function:
+                last_paren_index = full_function.rfind(')')
+                if last_paren_index != -1:
+                    # Check if there are existing arguments to decide if a comma is needed
+                    open_paren_index = full_function.find('(')
+                    content_between_parens = full_function[open_paren_index + 1:last_paren_index].strip()
+                    separator = ", " if content_between_parens else ""
+                    
+                    # Inject the bounding_box parameter
+                    full_function = (
+                        full_function[:last_paren_index]
+                        + f"{separator}bounding_box=session['globals_dict']"
+                        + full_function[last_paren_index:]
+                    )
 
-                # Inject bounding_box from session if id_list_of_entity_fast is called
-                if 'id_list_of_entity_fast(' in full_function and 'bounding_box=' not in full_function:
-                    last_paren_index = full_function.rfind(')')
-                    if last_paren_index != -1:
-                        # Check if there are existing arguments to decide if a comma is needed
-                        open_paren_index = full_function.find('(')
-                        content_between_parens = full_function[open_paren_index + 1:last_paren_index].strip()
-                        separator = ", " if content_between_parens else ""
-                        
-                        # Inject the bounding_box parameter
-                        full_function = (
-                            full_function[:last_paren_index]
-                            + f"{separator}bounding_box=session['globals_dict']"
-                            + full_function[last_paren_index:]
-                        )
+            variable_dict[variable_str] = full_function
+            comment_index = find_insert_comment_position(lines, lines[i], session['template'])
+            new_lines.append(full_function)
+            new_lines.append(f"send_data({variable_str}['geo_map'], 'map', '{comment_index}', sid='{sid}')")
+            i = j
+        elif any(func in each_line for func in
+                 ['geo_filter(', 'id_list_of_entity(','id_list_of_entity_fast(', 'area_filter(', 'add_or_subtract_entities(',
+                  'set_bounding_box(']) and '=' not in each_line:
+            full_function = each_line
+            open_parens = full_function.count('(')
+            close_parens = full_function.count(')')
+            j = i + 1
 
-                variable_dict[variable_str] = full_function
-                comment_index = find_insert_comment_position(lines, lines[i], session['template'])
-                new_lines.append(full_function)
-                new_lines.append(f"send_data({variable_str}['geo_map'], 'map', '{comment_index}', sid='{sid}')")
-                i = j
-            elif any(func in each_line for func in
-                     ['geo_filter(', 'id_list_of_entity(','id_list_of_entity_fast(', 'area_filter(', 'add_or_subtract_entities(',
-                      'set_bounding_box(']) and '=' not in each_line:
-                full_function = each_line
-                open_parens = full_function.count('(')
-                close_parens = full_function.count(')')
-                j = i + 1
+            # Collect multi-line function call
+            while j < len(lines) and open_parens > close_parens:
+                full_function += '\n' + lines[j]
+                open_parens += lines[j].count('(')
+                close_parens += lines[j].count(')')
+                j += 1
 
-                # Collect multi-line function call
-                while j < len(lines) and open_parens > close_parens:
-                    full_function += '\n' + lines[j]
-                    open_parens += lines[j].count('(')
-                    close_parens += lines[j].count(')')
-                    j += 1
+            # Inject bounding_box from session if id_list_of_entity_fast is called
+            if 'id_list_of_entity_fast(' in full_function and 'bounding_box=' not in full_function:
+                last_paren_index = full_function.rfind(')')
+                if last_paren_index != -1:
+                    # Check if there are existing arguments to decide if a comma is needed
+                    open_paren_index = full_function.find('(')
+                    content_between_parens = full_function[open_paren_index + 1:last_paren_index].strip()
+                    separator = ", " if content_between_parens else ""
 
-                # Inject bounding_box from session if id_list_of_entity_fast is called
-                if 'id_list_of_entity_fast(' in full_function and 'bounding_box=' not in full_function:
-                    last_paren_index = full_function.rfind(')')
-                    if last_paren_index != -1:
-                        # Check if there are existing arguments to decide if a comma is needed
-                        open_paren_index = full_function.find('(')
-                        content_between_parens = full_function[open_paren_index + 1:last_paren_index].strip()
-                        separator = ", " if content_between_parens else ""
+                    # Inject the bounding_box parameter
+                    full_function = (
+                        full_function[:last_paren_index]
+                        + f"{separator}bounding_box=session['globals_dict']"
+                        + full_function[last_paren_index:]
+                    )
 
-                        # Inject the bounding_box parameter
-                        full_function = (
-                            full_function[:last_paren_index]
-                            + f"{separator}bounding_box=session['globals_dict']"
-                            + full_function[last_paren_index:]
-                        )
+            comment_index = find_insert_comment_position(lines, lines[i])
+            new_lines.append(f"temp_result = {full_function}")
+            new_lines.append(f"send_data(temp_result['geo_map'], 'map', '{comment_index}', sid='{sid}')")
+            i = j
+        else:
+            new_lines.append(each_line)
+            i += 1
 
-                comment_index = find_insert_comment_position(lines, lines[i])
-                new_lines.append(f"temp_result = {full_function}")
-                new_lines.append(f"send_data(temp_result['geo_map'], 'map', '{comment_index}', sid='{sid}')")
-                i = j
-            else:
-                new_lines.append(each_line)
-                i += 1
+    # Handle the last line if it's a variable or needs print_process
+    if new_lines and '=' not in new_lines[-1] and 'send_data' not in new_lines[-1] and 'id_list_explain(' not in \
+            new_lines[-1] and '#' not in new_lines[-1]:
+        # if new_lines[-1].strip() in variable_dict:
+        #     if 'id_list_explain(' in variable_dict[new_lines[-1]]:
+        #         pass
+        # else:
+        new_lines[-1] = f"print_process({new_lines[-1].strip()})"
 
-        # Handle the last line if it's a variable or needs print_process
-        if new_lines and '=' not in new_lines[-1] and 'send_data' not in new_lines[-1] and 'id_list_explain(' not in \
-                new_lines[-1] and '#' not in new_lines[-1]:
-            # if new_lines[-1].strip() in variable_dict:
-            #     if 'id_list_explain(' in variable_dict[new_lines[-1]]:
-            #         pass
-            # else:
-            new_lines[-1] = f"print_process({new_lines[-1].strip()})"
+    code_str = '\n'.join(new_lines)
+    return code_str
 
-        code_str = '\n'.join(new_lines)
-        return code_str
 @app.route('/submit', methods=['POST', 'GET'])
 def submit():
-    # 加载包含 Markdown 容器的前端页面
-    data = request.get_json().get('text')  # 获取JSON数据
-    messages = request.get_json().get('messages')  # 获取JSON数据
-    sid = request.get_json().get('sid')  # 获取JSON数据
-    currentMode = request.get_json().get('currentMode')  # 获取JSON数据
+    # Load frontend page containing Markdown container
+    data = request.get_json().get('text')  # Get JSON data
+    messages = request.get_json().get('messages')  # Get JSON data
+    sid = request.get_json().get('sid')  # Get JSON data
+    currentMode = request.get_json().get('currentMode')  # Get JSON data
     need_bounding_box_function = ['id_list_of_entity(', 'geo_filter(']
-    # new_message = request.get_json().get('new_message')  # 获取JSON数据
+    # new_message = request.get_json().get('new_message')  # Get JSON data
     processed_response = []
 
     def process_code(data):
         yield_list = []
         compelete = False
         template = False
-        steps = 0  # 纯文字返回最多两次
-        whole_step = 0  # 总返回数,可以调整数值来限制未来的返回数
-        true_step = 0  # 总返回数
-
-            # chat_response = str(datetime.now())+"   "+str(len(messages)) #test
+        steps = 0  # Pure text return up to two times
+        whole_step = 0  # Total return count, can adjust value to limit future return count
+        true_step = 0  # Total return count
 
         code_list = []
         #
         if session['template'] == True:
-
             code_list.append(data)
             yield_list.append(data)
-
         else:
-
             messages.append(message_template('user', data))
             # print(messages)
-
             chat_response = (chat_single(messages, "stream"))
 
             chunk_num = 0
@@ -594,7 +469,6 @@ def submit():
                     if chunk.choices[0].delta.content is not None:
                         if chunk_num == 0:
                             char = "\n" + chunk.choices[0].delta.content
-
                         else:
                             char = chunk.choices[0].delta.content
                         chunk_num += 1
@@ -604,25 +478,25 @@ def submit():
                         # print(char, end='', flush=True)
 
                         line_buffer += char
-                        # 检查是否遇到了Python代码块的起始标志
+                        # Check if Python code block start marker is encountered
                         if code_block_start.startswith(line_buffer) and not in_code_block:
                             in_code_block = True
-                            line_buffer = ""  # 清空行缓冲区
+                            line_buffer = ""  # Clear line buffer
                             continue
-                        # 检查是否遇到了Python代码块的结束标志
+                        # Check if Python code block end marker is encountered
                         elif code_block_end.startswith(line_buffer) and in_code_block:
                             in_code_block = False
-                            line_buffer = ""  # 清空行缓冲区
+                            line_buffer = ""  # Clear line buffer
                             continue
 
-                        # 如果不在代码块中，则打印行缓冲区内容
+                        # If not in code block, print line buffer content
                         if (not in_code_block and line_buffer) or line_buffer.startswith('#'):
                             # yield char.replace('#', '#><;').replace("'", '')
                             yield_list.append(char.replace('#', '#><;').replace("'", ''))
 
-                            # time.sleep(0.1)  # 模拟逐字打印的效果
+                            # time.sleep(0.1)  # Simulate character-by-character printing effect
 
-                        # 如果遇到换行符，重置line_buffer
+                        # If newline character is encountered, reset line_buffer
                         if '\n' in char:
                             line_buffer = ""
             if currentMode!='reasoning':
@@ -642,7 +516,6 @@ def submit():
 
             # print(code_list)
         for line_num, lines in enumerate(code_list):
-
             # yield "\n\n`Code running...`\n"
             yield_list.append("\n\n`Code running...`\n")
             plt_show = False
@@ -661,15 +534,13 @@ def submit():
 
             # print(code_str)
             sys.stdout = output
-            start_time = time.time()  # 记录函数开始时间
+            start_time = time.time()  # Record function start time
 
             try:
-
                 exec(code_str, globals())
-
             except Exception as e:
                 exc_info = traceback.format_exc()
-                # 打印错误信息和代码行
+                # Print error information and line
 
                 if session['template'] == True:
                     print(e)
@@ -682,7 +553,7 @@ def submit():
                 # print(f"An error occurred: {repr(e)}\n{exc_info}")
             session.modified = True
 
-            end_time = time.time()  # 记录函数结束时间
+            end_time = time.time()  # Record function end time
             run_time = end_time - start_time
             code_result = str(output.getvalue().replace('\00', ''))
             output.truncate(0)
@@ -693,7 +564,7 @@ def submit():
                     filename = 'plot_20240711162140.png'
 
                 code_result = f'![matplotlib_diagram](/static/{filename} "matplotlib_diagram")'
-                whole_step = 5  # 确保图返回结果只会被描述一次
+                whole_step = 5  # Ensure figure return result is described only once
 
                 yield_list.append(code_result)
             show_template = details_span(code_result, run_time)
@@ -725,7 +596,7 @@ def submit():
 
         formatted_data = json.dumps(data_with_response, indent=2, ensure_ascii=False)
 
-        # 写入文本文件
+        # Write to text file
         with open('static/data3.txt', 'a', encoding='utf-8') as file:
             file.write(formatted_data)
         return yield_list
@@ -798,7 +669,7 @@ def upload_file():
 
 
 def convert_to_wkt_4326(geojson_list,epsg='3857'):
-    # 创建坐标转换器（假设输入坐标是 EPSG:3857，Web Mercator）
+    # Create coordinate transformer (assuming input coordinates are EPSG:3857, Web Mercator)
     transformer = Transformer.from_crs(f"EPSG:{str(epsg)}", "EPSG:4326", always_xy=True)
 
     wkt_list = []
@@ -888,7 +759,7 @@ def get_geojson_epsg(file_path):
     with open(file_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
-    # GeoJSON 可能包含 "crs" 字段，旧版格式使用 "properties.name"
+    # GeoJSON may contain "crs" field, old format uses "properties.name"
     crs = data.get('crs', {}).get('properties', {}).get('name')
 
     if crs:
