@@ -790,5 +790,42 @@ def query_ip_location(ip):
         return ip
 # chroma run --path ./chroma_db --host 0.0.0.0
 
+@app.route('/get_test_data', methods=['GET'])
+def get_test_data():
+    """Read test data from jsonl file."""
+    try:
+        test_data = []
+        jsonl_file_path = 'jsonl_files/eval_relationships_four_final_eval3.jsonl'
+        
+        with open(jsonl_file_path, 'r', encoding='utf-8') as f:
+            for line_num, line in enumerate(f, 1):
+                try:
+                    data = json.loads(line.strip())
+                    if 'query_result' in data:
+                        test_data.append({
+                            'id': line_num,
+                            'query': data['query_result']
+                        })
+                except json.JSONDecodeError as e:
+                    print(f"Error parsing line {line_num}: {e}")
+                    continue
+        
+        return jsonify({
+            'success': True,
+            'total': len(test_data),
+            'data': test_data
+        })
+        
+    except FileNotFoundError:
+        return jsonify({
+            'success': False,
+            'error': 'Test file not found'
+        }), 404
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
 if __name__ == '__main__':
     socketio.run(app,  allow_unsafe_werkzeug=True, host='0.0.0.0', port=9090)

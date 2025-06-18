@@ -397,7 +397,7 @@ def _iterative_fuzzy_search(original_query: str, table_scope: Optional[str],
         'iteration_used': max_iterations
     }
 
-def id_list_of_entity_fast(query: str, verbose: bool = False, bounding_box: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def id_list_of_entity_fast(query: str, verbose: bool = True, bounding_box: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Enhanced entity search function that:
     1. Searches in both fclass (labels) and name collections in chromadb

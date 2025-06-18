@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 import random
 import types
+from typing import Dict, Any
+
 import geo_functions
 from chat_py import *
 from levenshtein import are_strings_similar
@@ -23,27 +25,6 @@ new_dict_num = 0
 file_path = 'processed_example.jsonl'
 fclass_dict = {}
 name_dict = {}
-# for key, value in col_name_mapping_dict.items():
-#     if key not in fclass_dict:
-#         fclass_dict[key] = ids_of_attribute(key)
-#     if key not in name_dict:
-#         name_dict[key] = ids_of_attribute(key, 'name')
-# if os.path.exists(file_path):
-#     with open(file_path, 'r', encoding='utf-8') as file:
-#         # 逐行读取并处理每一行
-#         for line in file:
-#             current_dict = json.loads(line)
-#             key = next(iter(current_dict))  # 获取当前字典的键
-#             # 如果键不存在于全局字典中，直接添加
-#             if key not in global_paring_dict:
-#                 global_paring_dict[key] = current_dict[key]
-#             else:
-#                 # 如果键已存在，更新该键对应的字典
-#                 global_paring_dict[key].update(current_dict[key])
-#     for key, sub_dict in global_paring_dict.items():
-#         for sub_key, value in sub_dict.items():
-#             print(f'{key} -> {sub_key}')
-#
 fclass_dict_4_similarity = {}
 name_dict_4_similarity = {}
 all_fclass_set = set()
@@ -148,13 +129,12 @@ def vice_versa(query, messages=None):
     messages.append(message_template('system', ask_prompt))
     messages.append(message_template('user', query))
     result = chat_single(messages, 'json')
-    # print_modify(result)
-    json_result = json.loads(result)
-    if 'result' in json_result:
-        return json_result['result']
-    else:
-        raise Exception(
-            'no relevant item found for: ' + query + ' in given list.')
+    # Ensure result is a string before loading
+    if isinstance(result, str):
+        json_result = json.loads(result)
+        if 'result' in json_result:
+            return json_result['result']
+    raise Exception(f'Could not process response for: {query}')
 
 
 def string_process(s):
@@ -389,8 +369,11 @@ def pick_match(query_feature_ori, table_name, verbose=False,
         query_list = query_feature.split(" and ")
     else:
         query_list = [query_feature]
-    match_list = {'non_area_col': {'fclass': set(), 'name': set()},
-                  'area_num': None}
+    # Explicitly define the structure for clarity
+    match_list: Dict[str, Any] = {
+        'non_area_col': {'fclass': set(), 'name': set()},
+        'area_num': None
+    }
     for query in query_list:
 
         if query != '':
@@ -491,7 +474,7 @@ def pick_match(query_feature_ori, table_name, verbose=False,
 
             else:  # area relate query
 
-                match_list[col_name.replace('#', '')] = extract_numbers(query)
+                match_list['area_num'] = extract_numbers(query)
 
                 continue
 
@@ -604,6 +587,7 @@ For queries that do not involve any geographical relationship, your response sho
         "exist": false,
     }
 }
+For relations like passes through/meets, it should be taken as intersects
 Please ensure accuracy and precision in your responses, as these are critical for correctly interpreting the user's needs.
     """
     if messages == None:
@@ -715,8 +699,8 @@ def find_keys_by_values(d, elements):
 
 
 def merge_dicts(dict_list):
-    if isinstance(dict_list,dict):
-        dict_list=[dict_list]
+    if isinstance(dict_list, dict):
+        dict_list = [dict_list]
     result = {}
     for d in dict_list:
         for key, subdict in d.items():
@@ -776,44 +760,12 @@ def name_cosin_list(query, all_name_set=None):
     return match_list, name_judge_strong
 
 
-def id_list_of_entity_fast(query, verbose=False, bounding_box=None):
-    """
-    graph{num} = judge_type(multi_result['entities'][{num}])["database"]
-    type{num} = pick_match(multi_result['entities'][{num}], graph{num})
-    :param query:
-    :return:
-    """
-    # print_modify(query)
-    query = query.lower()
-    query = query.replace("strasse", 'straße')
-    print(query)
-    if bounding_box == None:
-        pass
-        # bounding_box = session['globals_dict']
-    print("bounding_box", bounding_box)
-    for word in query.split():
-        if word in similar_table_name_dict:
-            query = query.replace(word, similar_table_name_dict[word])
-    table_str = judge_table(query)
-    print_modify("table: ", table_str)
-    if table_str == None:
-
-        intersects_id_list = data_intersection_id_list(query,
-                                                       bounding_box=bounding_box)
-        if intersects_id_list:
-            return intersects_id_list
-
-        table_str = judge_table(query)['database']
-    else:
-        table_str = table_str['database']
-    query = extract_and_reformat_area_words(query)
-    type_dict = pick_match(query, table_str, verbose,
-                           bounding_box=bounding_box)
-    ids_list = ids_of_type(table_str, type_dict, bounding_box=bounding_box)
-    return ids_list
+# Function moved to agent_search_fast.py module
+# Import from the new module when needed:
 
 
-def calculate_similarity(query, column='type', table_name=None, bounding_box=None):
+def calculate_similarity(query, column='type', table_name=None,
+                         bounding_box=None):
     global all_fclass_set, all_name_set
     if bounding_box == None:
         pass
@@ -828,20 +780,17 @@ def calculate_similarity(query, column='type', table_name=None, bounding_box=Non
     if table_name:
         give_list = ids_of_attribute(table_name, specific_col=column,
                                      bounding_box_coordinates=bounding_box)
-    similar_match = calculate_similarity_chroma(query=query, give_list=give_list, mode=column)[0]
+    similar_match = \
+    calculate_similarity_chroma(query=query, give_list=give_list, mode=column)[
+        0]
     if not similar_match and table_name:
-        return ("No similar items found, here are five examples from this table: %s, you need to change your query to "
-                "this expression style/language")%str(list(give_list)[:5])
+        return (
+            "No similar items found, here are five examples from this table: %s, you need to change your query to "
+            "this expression style/language") % str(list(give_list)[:5])
     return similar_match
 
 
 def find_table_by_elements(elements, column='type'):
-    """
-
-
-    relevant_elements = ['SPORTL.I.C.H.', 'FUTURE SPORTS', 'Sportplatz', 'Sportiva', 'Sports4You', 'Heimspiel'] column = "name" table_dict = find_table_by_elements(elements=relevant_elements, column=column)
-    :return: {'area': ['Sportplatz', 'Heimspiel'], 'points': ['SPORTL.I.C.H.', 'FUTURE SPORTS', 'Sportplatz', 'Sportiva', 'Sports4You', 'Heimspiel'], 'lines': ['Sportplatz']}
-    """
     global all_fclass_set, all_name_set, name_dict_4_similarity, fclass_dict_4_similarity
     if column == 'type':
 
@@ -850,65 +799,20 @@ def find_table_by_elements(elements, column='type'):
         return find_keys_by_values(name_dict_4_similarity, elements)
 
 
-def ids_of_elements(col_type=None, col_name=None, bounding_box=None, table_name=None):
-    if col_type is None:
-        col_type = []
-    if col_name is None:
-        col_name = []
-    results = {}
-    if bounding_box is None:
+def ids_of_elements(table_name, col_type=None, col_name=None,
+                    bounding_box=None):
+    if bounding_box == None:
         pass
         # bounding_box = session['globals_dict']
-    if not col_type and not col_name and table_name:
-        return   ids_of_type(table_name, {
-                'non_area_col': {'fclass': set(), 'name': set()},
-                'area_num': None}, bounding_box=bounding_box)
-
-
-
-    # One of name/type is None
-    if not col_type:
-        name_tables = find_table_by_elements(col_name, column='name')
-
-        for table, names in name_tables.items():
-            ids = ids_of_type(table, {
-                'non_area_col': {'fclass': set(), 'name': set(names)},
-                'area_num': None}, bounding_box=bounding_box)
-            results.update(ids)
-
-        return results
-
-    if not col_name:
-        type_tables = find_table_by_elements(col_type, column='type')
-
-        for table, types in type_tables.items():
-            ids = ids_of_type(table, {
-                'non_area_col': {'fclass': set(types), 'name': set()},
-                'area_num': None}, bounding_box=bounding_box)
-            results.update(ids)
-        return results
-
-    # Both col_type and col_name are provided
-    name_tables = find_table_by_elements(col_name, column='name')
-    type_tables = find_table_by_elements(col_type, column='type')
-
-    common_tables = set(name_tables.keys()) & set(type_tables.keys())
-
-
-    if common_tables:
-
-        for table in common_tables:
-            ids = ids_of_type(table, {
-                'non_area_col': {
-                    'fclass': set(type_tables[table]),
-                    'name': set(name_tables[table])
-                },
-                'area_num': None}, bounding_box=bounding_box)
-            if ids:
-                results.update(ids)
-    if not common_tables or not results:
-        return "No elements meet both the name and type constraints. Please modify them."
-    return results
+    if col_name is None:
+        col_name = []
+    if col_type is None:
+        col_type = []
+    ids_list = ids_of_type(table_name, {
+        'non_area_col': {'fclass': set(col_type),
+                         'name': set(col_name)},
+        'area_num': None}, bounding_box=bounding_box)
+    return ids_list
 
 
 def id_list_of_entity(query, verbose=False, bounding_box=None):
@@ -921,7 +825,7 @@ def id_list_of_entity(query, verbose=False, bounding_box=None):
         pass
     global all_fclass_set, all_name_set, name_dict_4_similarity, fclass_dict_4_similarity
 
-    table_return=judge_table(query)
+    table_return = judge_table(query)
     if table_return:
         table_str = next(iter(table_return.values()))
 
@@ -929,7 +833,8 @@ def id_list_of_entity(query, verbose=False, bounding_box=None):
 
         add_str = table_str
         if 'notice' in col_name_mapping_dict[table_str]:
-            add_str += ", Notice Information: %s" % col_name_mapping_dict[table_str]['notice']
+            add_str += ", Notice Information: %s" % \
+                       col_name_mapping_dict[table_str]['notice']
         query += " (This query has Possible limited table: %s )" % add_str
 
     if bounding_box != None:
@@ -961,51 +866,44 @@ This function returns a list of similar items based on vector similarity.
 Since the list may be inaccurate, You should first perform a semantic check and only pass the elements that meet the query requirements to find_table_by_elements.
 If the returned list is empty, you need to adjust the query and perform the search again.  
 You can use your own knowledge to decide how to modify the query—if the search is too abstract, change the query's content or form.
-If the query does not explicitly specify a particular column, it is recommended to search both the name and type columns, and then select the semantically appropriate entries for further processing.
 
-If the query explicitly specifies a table name (you will be informed in the query), and you agree that it clearly restricts the table, then only search within that table.
+If the query explicitly specifies a table name (you will be informed in the query), and you agree that it clearly restricts the table, then only search within that table. In that case, you **do not** need to call `find_table_by_elements` to determine the table name, because you already know it.
 
-2. `ids_dict = ids_of_elements(col_type=[], col_name=[],table_name=None)`  
-This function returns the results based on the `col_type` and `col_name` filters. Both parameters are lists, means you can add multiple words into one filter in the same time.  
-If both are non-empty, the function returns elements that satisfy BOTH conditions, This means searched element's type and name must both be included in the provided type and name filter lists in order to be matched.
-This is useful for queries like “Isar River,” where "Isar" is the name and "River" is the type.  
+2. `table_dict = find_table_by_elements(elements=[], column=column)`  
+This function takes a list of elements as input, e.g., `[a, b, c, d]`, and returns a dictionary like:  
+`{"table_a": [a, b], "table_b": [c, d]}`  
+It helps you determine which table each element belongs to.
+
+3. `each_id_list = ids_of_elements(table_name, col_type=[], col_name=[])`  
+This function returns the results based on the `type` and `name` filters. Both parameters are lists.  
+If both are non-empty, the function returns elements that satisfy BOTH conditions.  
+This is useful for queries like "Isar River," where "Isar" is the name and "River" is the type.  
 If either list is empty, that column is not used as a filter.
 
-Result of ids_of_elements could be too long, please do not print it out.
+Since `ids_of_elements` can return a very long list, **only use `len()` to check whether it's empty**; do not print the entire result.
 
-You can construct multiple calls to `ids_of_elements` and append the results to a list(do not use `extend`).
-The final result should be stored in a variable called `final_ids`.
-The final variable `final_ids` should either be a list of results from multiple ids_of_elements calls, or the result of a single call.
-If the input query is nearly identical to a table name, you can directly use:  
-`final_ids = ids_of_elements(col_type=[], col_name=[],table_name)`  
+You can construct multiple calls to `ids_of_elements` and append the results to a list (do not use `extend`).
+
+If the input query is nearly identical to a table name(It only works when the words are nearly identical in spelling, such as the difference between singular and plural forms.), you can directly use:  
+`final_id_list = ids_of_elements(table_name, col_type=[], col_name=[])`  
 to return all the elements in that table.
-
 
 You need to write Python code to call the functions above, wrapped in ```python and ```.  
 Use `print` statements to show anything you need to examine.  
-
+The final result should be stored in a variable called `final_id_list` (which is still a list).  
 
 **Notice:** Please only call **one** function per session!
     """
     print(query)
-    namespace = {name: obj for name, obj in globals().items() if isinstance(obj, types.FunctionType)}
+    namespace = {name: obj for name, obj in globals().items() if
+                 isinstance(obj, types.FunctionType)}
     namespace["final_id_list"] = []
     messages = messages_initial_template(sys_prompt, query)
     round_num = 0
-    test_prompt="""
-```python
-final_ids = []
-final_ids.append(ids_of_elements(col_type=['park', 'hotel', 'ruins', 'museum', 'restaurant', 'temple'], col_name=[]))
-final_ids.append(ids_of_elements(col_type=[], col_name=['Café Lieblingsplatz', 'Theater Platzl', 'Max-Joseph-Platz']))
-print(final_ids)
-```
-    """
-
-
+    merged_id_list = {}  # Initialize to prevent unbound error
     while round_num <= 10:
         round_num += 1
-        # code_result = chat_single(messages,temperature=0.3)
-        code_result = test_prompt
+        code_result = chat_single(messages, temperature=0.5)
         print("response", code_result)
 
         messages.append(message_template('assistant', code_result))
@@ -1014,28 +912,20 @@ print(final_ids)
             code_return = str(
                 execute_and_display(extract_python_code(code_result),
                                     namespace))
+        else:
+            code_return = code_result
 
-            messages.append(message_template('user', "code_return: "+ str(code_return)))
+        print("code_return", code_return)
+        messages.append(message_template('user', str(code_return)))
 
+        if 'final_id_list' in namespace:
+            if namespace["final_id_list"]:
+                if 'traceback' not in str(code_return).lower():
+                    merged_id_list = merge_dicts(namespace["final_id_list"])
+                    break
 
+    return merged_id_list
 
-        if 'final_ids' in namespace:
-            val = namespace["final_ids"]
-            print(val)
-            if (isinstance(val, list) and val and isinstance(val[0],
-                                                             dict)) or isinstance(
-                    val, dict):
-                merged_id_list = merge_dicts(namespace["final_ids"])
-                return merged_id_list
-
-            if 'final_ids' in code_result:
-                messages.append(message_template('user', "The final variable `final_ids` should either be a list of results from multiple ids_of_elements calls, or the result of a single call."))
-        print(messages[-1])
-        break
-
-
-    print("Exceed Maximum Iterations!")
-    return None
 
 def intersect_dicts(dict1, dict2):
     # 获取两个字典键的交集
@@ -1233,26 +1123,6 @@ def find_negation(text):
     return False, None
 
 
-#
-# def judge_bounding_box(query, filter=False, messages=None):
-#     if messages == None:
-#         messages = []
-#     new_query = None
-#     # if 'munich ismaning' in query.lower():
-#     #     return 'munich ismaning'
-#     locations = ['Munich', 'Augsburg', 'Munich Moosach', 'Munich Maxvorstadt', 'Munich Ismaning', 'Freising',
-#                  'Oberschleissheim', 'Hadern']
-#     final_address = []
-#     for address in locations:
-#         if address.lower() in query.lower():
-#             final_address.append(address)
-#     if filter:
-#         new_query = process_query(str({'location name': final_address, 'query': query}))
-#     return final_address, query
-
-# return final_address
-
-
 def get_label_from_id(id_list):
     return {key[:list(key).index('_', list(key).index('_') + 1)] for key in
             id_list.keys() if key.count('_') >= 2}
@@ -1275,8 +1145,11 @@ def geo_filter(query, id_list_subject, id_list_object, bounding_box=None):
     if versa_sign:
         query = query.replace(negation_word, '')
     geo_relation = judge_geo_relation(query)
-    # print_modify( geo_relation['type'])
-    # print_modify(id_list_subject)
+    print("geo_relation",geo_relation)
+    if geo_relation is None:
+        # Handle case where no relation is found
+        return {'error': 'No geographical relation found in query.'}
+
     geo_result = geo_calculate(id_list_subject, id_list_object,
                                geo_relation['type'], geo_relation['num'],
                                versa_sign=versa_sign,
@@ -1287,77 +1160,10 @@ def geo_filter(query, id_list_subject, id_list_object, bounding_box=None):
     return geo_result
 
 
-def judge_object_subject(query, geo_relation_dict, messages=None):
-    print_modify('query for judge_object_subject:', query)
-
-    if messages == None:
-        messages = []
-    ask_prompt_geo_relation = """
-
-    Please response in json format: {'entity_text':entity_text, 
-    'non_spatial_modify_statement':non_spatial_modify_statement}. 
-
-    For example, when I ask, 'I want to know the 
-    residential area near the swamp,' you should respond with: {'entity_text':'residential area', 
-    'non_spatial_modify_statement':'swamp'}. Similarly, for 'I want to know the buildings around 100m of forests, 
-    ' the response should be:  {'entity_text':'buildings', 'non_spatial_modify_statement':'forests'}, 
-
-    If there is no non_spatial_modify_statement, non_spatial_modify_statement should be set as None, example: 
-    for 'the largest 5 forest', non_spatial_modify_statement is None. """
-    ask_prompt_adj = """
-You are a query analysis expert. Your task is to extract the primary subject and any related statements from user queries. Here's how you should approach it:
-
-Identify the primary subject in the query. This is often a noun or a noun phrase that forms the core focus of the query.
-Extract the related statement which modifies or provides additional context about the primary subject, and response in json format.
-For example:
-Query: "show commercial buildings"
-Expected Output: {'entity_text':'buildings', 'non_spatial_modify_statement':'commercial'}
-Query: "soil type good for agriculture"
-Expected Output: {'entity_text':'soil', 'non_spatial_modify_statement':'good for agriculture'}
-Query: "buildings which is commercial"
-Expected Output: {'entity_text':'buildings', 'non_spatial_modify_statement':'commercial'}
-If a query does not explicitly mention a primary subject but provides a statement,like asking about 'where is for...' set entity_text as None:
-Query: "Where is good for planting strawberries"
-Expected Output: {'entity_text':None, 'non_spatial_modify_statement':'good for planting strawberry'}
-Query: "Where is good for planting vegetables"
-Expected Output: {'entity_text':None, 'non_spatial_modify_statement':'good for planting vegetables'}
-If there is no modifying statement, set the non_spatial_modify_statement to None:
-Query: "show greenery"
-Expected Output: {'entity_text': 'greenery', 'non_spatial_modify_statement': None}
-Your goal is to consistently apply this method to analyze and break down user queries into structured data as shown above.
-    """
-
-    if messages == None:
-        messages = []
-    if geo_relation_dict != None and 'area_calculate' not in geo_relation_dict:
-        print_modify('geo_calculate')
-        ask_prompt = ask_prompt_geo_relation
-    else:
-        print_modify('ask_prompt_adj')
-        ask_prompt = ask_prompt_adj
-    messages.append(message_template('system', ask_prompt))
-    messages.append(message_template('user', query))
-    result = chat_single(messages, 'json')
-    # print_modify(result)
-    json_result = json.loads(result)
-    if 'entity_text' in json_result:
-
-        return {'entity_text': json_result['entity_text'],
-                'non_spatial_modify_statement': json_result[
-                    'non_spatial_modify_statement']}
-
-    else:
-        raise Exception(
-            'no relevant item found for: ' + query + ' in given list.')
-
-
-def judge_table(query, mode="",messages=None):
+def judge_table(query, messages=None):
     if isinstance(query, dict):
         query = str(query)
-    #     if query['entity_text']!=None: #没有地理关系,有non_spatial_modify_statement，是subject的形容词,object subject 被全部送入judge_type防止没有主语
-    #         query= query['entity_text']
-    #     else:
-    #         query=query['non_spatial_modify_statement']
+
     soil_list = [
         'planting', 'potatoes',
         'tomatoes', 'strawberr', 'agriculture', 'soil', 'farming'
@@ -1378,204 +1184,11 @@ def judge_table(query, mode="",messages=None):
     for i in col_name_mapping_dict:
         if i in query.lower().split():
             return {'database': i}
-    if mode!='reasoning':
-        if 'greenery' in query.lower():
-            return {'database': 'area'}
 
-    # if 'area' in query.lower():
-    #     return {'database': 'land'}
-    #
-    # if 'building' in query.lower() and 'soil' not in query.lower():
-    #     return {'database': 'buildings'}
-    #
-    # if 'land' in query.lower() and 'soil' not in query.lower():
-    #     return {'database': 'land'}
-    # if 'soil' in query.lower():
-    #     return {'database': 'soil'}
+    if 'greenery' in query.lower():
+        return {'database': 'area'}
+
     return None
-
-
-def judge_entity(query, messages=None):
-    if isinstance(query, dict):
-        query = str(query)
-    if query == None:
-        return None
-    if messages == None:
-        messages = []
-    ask_prompt = """
-        User will give you a sentence or a word, to search elements in dataset, which may related to type of data or name of data,
-        "Type of data" means a more general category name, such as "river" or "restaurant".
-        you need to extract these infomation into a dict:
-        {
-        'type':...,
-        'name':...,
-        }
-        example:
-        User:isar river
-        You:
-        {
-        'type':'river',
-        'name':'isar',
-        }
-        notice: each part of sentence can only be classified to type or name once, if the label do not have words, set it to None.
-
-        notice: Each key value should not include meaningless words such as "location" or "substance".
-        only return json.
-        """
-    if messages == None:
-        messages = []
-
-    messages.append(message_template('system', ask_prompt))
-    messages.append(message_template('user', str(query)))
-    result = chat_single(messages, 'json')
-
-    json_result = json.loads(result)
-    return json_result
-
-
-def judge_table_gpt(query, messages=None):
-    if isinstance(query, dict):
-        query = str(query)
-    if query == None:
-        return None
-    if messages == None:
-        messages = []
-    ask_prompt = """
-    User will give you a sentence, which may contains type of data or name of data, you need to extract these infomation into a dict:
-
-    {
-    'type':...,
-    'name':...,
-    }
-    example:
-    User:isar river
-    You:
-    {
-    'type':'river',
-    'name':'isar',
-    'other_attributes':none
-    }
-    """
-    if messages == None:
-        messages = []
-
-    messages.append(message_template('system', ask_prompt))
-    messages.append(message_template('user', str(query)))
-    result = chat_single(messages, 'json')
-    # print_modify(result)
-    json_result = json.loads(result)
-    return json_result
-
-
-def mission_gpt(query, messages=None):
-    print_modify(query)
-    if isinstance(query, dict):
-        query = str(query)
-    if query == None:
-        return None
-    if messages == None:
-        messages = []
-
-    ask_prompt = """
-
-You have following tools available to answer user queries, please only write code, do not write code comments and other words:
-I have three kinds of data:buildings, area , soil, points and roads.
-1.id_list_of_entity(description of entity):
-Input: Description of the entity, like adj or prepositional phrase like good for commercial,good for planting potatoes.
-Output: A list of IDs (id_list) corresponding to the described entity.
-Usage: Use this function to obtain an id_list which will be used as input in the following functions.
-Notice: if entity has area, please keep it, like: 'residential area'
-Notice: Do not input geographical relation like 'in/on/under/in 200m of/close' into this function, it is not description of entity.
-
-2.geo_filter('their geo_relation',id_list_subject, id_list_object):
-Input: Two id_lists (one as subject and one as object) and their corresponding geographical relationship.
-Output: A dict contains 'subject','object' two keys as filtered id_lists based on the geographical relationship.
-Usage: This function is used only when the user wants to query multiple entities that are geographically related. Common geographical relationships are like: 'in/on/under/in 200m of/close/contains...'
-Notice: id_list_subject should be the subject of the geo_relation, in example: soil under the buildings, soil is subject.
-
-Please notice to add ['object'] or ['subject'] in corresponding result of geo_filter
-Please always set an output variable for each function you called. Variable in history is available to call.
-    """
-    if messages == None:
-        messages = []
-
-    messages.append(message_template('system', ask_prompt))
-    messages.append(message_template('user', str(query)))
-    # result = chat_single(messages, '','gpt-4o-2024-05-13')
-    result = chat_single(messages, '')
-    return result
-
-
-def general_gpt(query, messages=None, json_mode='', ask_prompt='',
-                verbose=False):
-    if isinstance(query, dict):
-        query = str(query)
-    if query == None:
-        return None
-    if messages == None:
-        messages = []
-
-    if messages == None:
-        messages = []
-
-    messages.append(message_template('system', ask_prompt))
-    messages.append(message_template('user', str(query)))
-    # result = chat_single(messages, '','gpt-4o-2024-05-13')
-    result = chat_single(messages, json_mode, verbose=verbose)
-    print_modify('general_gpt result:', result)
-    return result
-
-
-def chart_agent(query, messages=None):
-    if query == None:
-        return None
-    if messages == None:
-        messages = []
-
-    ask_prompt = """
-    You need to give me the code for drawing a diagram according to the query.
-    You will be given a code block and you need to pick one appropriate variable in them and draw it.
-    If the variable has string 'explain'， it means this variable is a occur frequency dict, its key name is string name,
-    key value is number.
-    otherwise, the variable is a dict with geo wkt as its key value, still string in its key name.
-
-    Please notice, always use the variable itself to draw diagram but not assume fake values.
-    """
-    if messages == None:
-        messages = []
-
-    messages.append(message_template('system', ask_prompt))
-    messages.append(message_template('user', str(query)))
-    result = chat_single(messages, '', 'gpt-4o-2024-05-13')
-    return result
-
-
-def routing_agent(query, messages=None):
-    if query == None:
-        return None
-    if messages == None:
-        messages = []
-
-    ask_prompt = """
-You are a task planner. Based on the user's query, select the next function to execute and inform them of the task to be performed. There are three functions available:
-
-explain_agent: Explain information to the user.
-chart_agent: Create charts for the user.
-Mission_agent: Answer spatial query for user.
-Choose the most appropriate function and provide clear instructions on what work needs to be done.
-output as json format like:
-{
-'agent':agent
-}
-    """
-    if messages == None:
-        messages = []
-
-    messages.append(message_template('system', ask_prompt))
-    messages.append(message_template('user', str(query)))
-    result = chat_single(messages, 'json')
-
-    return json.loads(result)['function']
 
 
 def set_bounding_box(region_name, query=None):
@@ -1585,18 +1198,18 @@ def set_bounding_box(region_name, query=None):
         , "bounding_wkb": ''
     }
     if region_name == '':
-        # session['globals_dict']=None
+        # session['globals_dict'] = None
 
         return {'geo_map': ''}
 
     bounding_box_dict["bounding_box_region_name"] = region_name
-    bounding_box_dict['bounding_coordinates'], bounding_box_dict[
-        'bounding_wkb'], response_str = find_boundbox(region_name)
-
+    coords, wkb_hex, response_str = find_boundbox(region_name)
+    bounding_box_dict['bounding_coordinates'] = coords
+    bounding_box_dict['bounding_wkb'] = wkb_hex
     geo_dict = {
         bounding_box_dict["bounding_box_region_name"]: (
             wkb.loads(bytes.fromhex((bounding_box_dict['bounding_wkb']))))}
-    # session['globals_dict']=bounding_box_dict
+    # session['globals_dict'] = bounding_box_dict
     # session.modified = True
     return_dict = {'geo_map': geo_dict}
     return_dict.update(bounding_box_dict)
@@ -1629,234 +1242,27 @@ json
     print("original", query)
     print('modified', result)
     return json.loads(result)['boundingbox']
-final_ids = id_list_of_entity("greenery")
-# print(final_ids)
-# Search for similar entries in the 'name' column
-# match_list_name = calculate_similarity(query="starberger see", column="name")
-# # Search for similar entries in the 'type' column
-# match_list_type = calculate_similarity(query="starberger see", column="type")
-# print("Match List for Name:", match_list_name)
-# print("Match List for Type:", match_list_type)
-# print(match_list_name)
-# print(new_id_of_entity("I want to know soil good for agriculture"))
-# bounding_box = set_bounding_box('Munich')
-# Combine the results from all tables
-# final_id_list = []
-#
-# # Add IDs from the "area" table
-# final_id_list.extend(ids_of_elements("area", col_type=['farmland', 'farm', 'orchard', 'meadow'], col_name=[]))
-#
-# # Add IDs from the "buildings" table
-# final_id_list.extend(ids_of_elements("buildings", col_type=['farm', 'garden'], col_name=[]))
-#
-# # Add IDs from the "points" table
-# final_id_list.extend(ids_of_elements("points", col_type=['farm'], col_name=[]))
-#
-# # Print the length of the final list to confirm
-# print(len(final_id_list))
-# print(final_id_list)
-# merge_dicts(final_id_list)
-# import types
-#
-# # 获取当前作用域的所有全局函数
-# funcs = {name: obj for name, obj in globals().items() if isinstance(obj, types.FunctionType)}
-#
-# code_result="""
-#
-# ```python
-# # 搜索与“足球”相关的条目
-# football_type_matches = calculate_similarity(query="football", column="type")
-# ```
-# """
-# code_return = str(
-#     execute_and_display(extract_python_code(code_result),
-#                         funcs))
-# print(funcs['football_type_matches'])
-# print(code_return)
-# print(bounding_box)
-# match_list, _ = calculate_similarity_chroma(query='englisch', give_list=all_fclass_set, mode='fclass')
-# table_name_dicts = find_keys_by_values(name_dict_4_similarity, match_list)
-# print(match_list)
-# print(table_name_dicts)
-# id_list_river_attel = id_list_of_entity('Englisch garten',
-#                                         bounding_box=bounding_box)
-# print(id_list_river_attel)
-# id_list_river_attel = id_list_of_entity('munich central station',
-#                                         bounding_box=bounding_box)
-# print(id_list_river_attel)
-# bounding_box=set_bounding_box('Munich')
-# # id_list_stream_wieshamer_bach = id_list_of_entity('studentenstadt bus stop')
-# # restaurants=id_list_of_entity('chinese restaurants')
-# # university=id_list_of_entity('Technische Universität München')
-# # aa=traffic_navigation(id_list_stream_wieshamer_bach, university,restaurants)
-# # print(aa)
-# bounding_box=id_list_of_entity('Sylvensteinstr')
-# print(bounding_box)
-# Get the id_list for Hasi’s Hotel
-# soil_id_list = id_list_of_entity("soil good for planting tomatoes",bounding_box=bounding_box)
-# print(soil_id_list)
-# Find the river Attel that intersects with the stream Wieshamer Bach
-# result_intersection = geo_filter('intersects', id_list_river_attel, id_list_stream_wieshamer_bach)
-# filtered_river_attel = result_intersection['subject']
 
-# Find the river Attel within 500 meters of Hasi’s Hotel
-# result_near_hasi_hotel = geo_filter('in 500m of', filtered_river_attel, id_list_hasi_hotel)
-# filtered_river_attel_near_hasi_hotel = result_near_hasi_hotel['subject']
-
-# Find the river Attel within 500 meters of Kastenwirt
-# result_near_kastenwirt = geo_filter('in 500m of', filtered_river_attel_near_hasi_hotel, id_list_kastenwirt)
-# filtered_river_attel_near_kastenwirt = result_near_kastenwirt['subject']
-
-# id_list_westendstrasse = id_list_of_entity('Abfall')
-# id_list_westendstrasse = id_list_of_entity('clothing store named Ingrid Lindner - Mode Wäsche Accessoires')
-# print(id_list_westendstrasse)
-# kastenwirt_id_list = id_list_of_entity("Kastenwirt")
-# print(kastenwirt_id_list)
-# id_list_theodor_memorial = id_list_of_entity('memorial named Theodor v. Cramer-Klett')
-# # Filter the river Urtel that is located within 500 meters of Hasi’s Hotel
-# result_hasi = geo_filter("in 500m of", hasi_hotel_id_list, urtel_id_list)
-# print(result_hasi)
-# print(id_list_theodor_memorial)
-# # Filter the river Urtel that is located within 500 meters of Kastenwirt
-# result_kastenwirt = geo_filter("in 500m of", kastenwirt_id_list, result_hasi['object'])
-# print(result_kastenwirt)
-## Find the IDs of entities described by 'service' and 'parking entranceway'
-# Getting IDs for 'archaeological'
+# from agent_search_fast import id_list_of_entity_fast
+# river_weiße_traun_id_list = id_list_of_entity_fast("river named Weiße Traun")
 #
-# Get the ID list for the museum "Heimatmuseum im Schlossturm"
-# Get the list of IDs corresponding to 'Basketballplatz'.
-# final_result=ids_of_type('area',test_mode=True,type_dict={'non_area_col': {'fclass': {'pitch'}, 'name': {'Sportpark'}}, 'area_num': None})
-# # print(final_result)
-# id_list_pitch = id_list_of_entity('pitch named Parkstraße')
+# # Step 2: Get the ID list for the stream named "Kollerbach"
+# stream_kollerbach_id_list = id_list_of_entity_fast("stream named Kollerbach")
 #
-# # Get the ID list for the park named "Sportpark"
-# id_list_park = id_list_of_entity('park named Sportpark')
+# # Step 3: Get the ID list for the stream named "Tiefenbach"
+# stream_tiefenbach_id_list = id_list_of_entity_fast("stream named Tiefenbach")
 #
-# # Filter the pitches that are in the park named Sportpark
-# final_result = geo_filter('in', id_list_pitch, id_list_park)
-# print(final_result)
-# # Get the ID list for clothes named Inntaler Trachtenwelt
-# inntaler_trachtenwelt_ids = id_list_of_entity("clothes named Inntaler Trachtenwelt")
+# # Step 4: Get the ID list for the stream named "Windbach"
+# stream_windbach_id_list = id_list_of_entity_fast("stream named Windbach")
 #
-# # Get the ID list for car dealership called VW Audi Suzuki
-# vw_audi_suzuki_ids = id_list_of_entity("car dealership named VW Audi Suzuki")
+# # Step 5: Filter the river "Weiße Traun" that intersects with the stream "Kollerbach"
+# intersecting_weiße_traun_kollerbach = geo_filter('intersects', river_weiße_traun_id_list, stream_kollerbach_id_list)
 #
-# # Get the ID list for tertiary named Ulrich-Schmid-Straße
-# ulrich_schmid_strasse_ids = id_list_of_entity("tertiary named Ulrich-Schmid-Straße")
+# # Step 6: Filter the river "Weiße Traun" that passes through the stream "Tiefenbach"
+# passing_weiße_traun_tiefenbach = geo_filter('passes through', intersecting_weiße_traun_kollerbach['subject'], stream_tiefenbach_id_list)
 #
-# # Filter VW Audi Suzuki car dealerships within 500m of Ulrich-Schmid-Straße
-# filtered_vw_audi_suzuki_ids = geo_filter("in 500m of", vw_audi_suzuki_ids, ulrich_schmid_strasse_ids)
-#
-# # Filter clothes named Inntaler Trachtenwelt based on the location of filtered VW Audi Suzuki dealerships
-# final_result = geo_filter("contains", inntaler_trachtenwelt_ids, filtered_vw_audi_suzuki_ids['subject'])
-#
-# print(final_result)
-# # Get id_list for sports centre
-# id_list_sports_centre = id_list_of_entity('pitch named Sportpark')
-# # final_result=ids_of_type('points',type_dict={'non_area_col': {'fclass': {'pitch'}, 'name': {'Sportpark'}}, 'area_num': None})
-# print(id_list_sports_centre)
-# #
-# # Get id_list for suburb
-# id_list_suburb = id_list_of_entity('suburb')
-#
-# # Use geo_filter to find sports centres within suburbs
-# result = geo_filter('in', id_list_sports_centre, id_list_suburb)
-#
-# # Set final_result to the filtered sports centres
-# final_result = result['subject']
-# print(final_result)
-# # Get the list of IDs for 'detached'
-# # Get the IDs for prefabricated and locality
-# prefabricated_id_list = id_list_of_entity("prefabricate")
-# locality_id_list = id_list_of_entity("locality")
-#
-# # Apply the geographic filter to find prefabricated within a locality
-# final_result = geo_filter('in', prefabricated_id_list, locality_id_list)
-# print(final_result)
-# # clothes = searched_result
-#
-# # Apply geographical filter to find car dealerships that contain clothes
-# result = geo_filter('contains', car_dealerships, clothes)
-#
-# # Set the final result
-# final_result = result['subject']
-# print(final_result)
-#
-# searched_result_detached = id_list_of_entity('detached')
-#
-# # Get the ID list of 'vending'
-# searched_result_vending = id_list_of_entity('vending')
-#
-# # Apply the 'intersects with' geographical filter
-# result = geo_filter('intersects with', searched_result_detached, searched_result_vending)
-#
-# # Set final_result for further use
-# print(result)
-
-# searched_result_secondary = id_list_of_entity('secondary road')
-#
-# # Get IDs for 'tram'
-# searched_result_tram = id_list_of_entity('tram')
-#
-# # Filter 'secondary' roads that intersect with 'tram'
-# result = geo_filter('intersect', searched_result_secondary, searched_result_tram)
-
-
-# print(all_name_set)
-# # Get the id_list for the river named Partnach
-# # Get the list of IDs for suburbs
-# searched_result_suburb = id_list_of_entity('suburb')
-#
-# # Get the list of IDs for camera surveillance
-# searched_result_camera = id_list_of_entity('camera surveillance')
-#
-# # Filter suburbs that contain camera surveillance
-# filtered_result = geo_filter('contains', searched_result_suburb, searched_result_camera)
-#
-# # The final result is the filtered list of suburbs
-# final_result = filtered_result['subject']
-# print(len(final_result))
-# print((result['subject']['id_list']))
-# result = geo_calculate(id_list_track_grade1, id_list_trunk_link, 'buffer', 500)
-# result_subject = result['subject']['id_list']
-# result_object = result['object']['id_list']
-# print("len(result_subject)", len(result_subject))
-# print("len(result_object)", len(result_object))
-# {'roads_track grade1_None_54726408': <MULTILINESTRING ((11.707 48.752, 11.706 48.752, 11.706 48.752, 11.706 48.75...>, 'roads_track grade1_None_54168799': <MULTILINESTRING ((11.822 48.074, 11.822 48.074, 11.822 48.074, 11.822 48.07...>, 'roads_track grade1_None_35818676': <MULTILINESTRING ((11.11 47.516, 11.11 47.515))>, 'roads_track grade1_None_913679049': <MULTILINESTRING ((11.399 48.587, 11.399 48.586, 11.399 48.586, 11.4 48.586))>, 'roads_track grade1_None_35062578': <MULTILINESTRING ((11.808 48.08, 11.809 48.08, 11.809 48.08))>}
-# print("len(ids_of_attribute('soil','fclass'))",(get_column_names('roads')))
-# print("len(ids_of_attribute('soil','fclass'))",(ids_of_attribute('buildings','fclass')))
-# # print("len(ids_of_attribute('soil','fclass'))",(ids_of_attribute('roads','tunnel')))
-# # print("len(ids_of_attribute('soil','fclass'))",(ids_of_attribute('roads','oneway')))
-# print("len(ids_of_attribute('soil','fclass'))",(ids_of_attribute('roads','maxspeed')))
-# # print("len(ids_of_attribute('soil','fclass'))",(ids_of_attribute('roads','width')))
-# # print("len(ids_of_attribute('soil','fclass'))",(ids_of_attribute('roads','path')))
-# # print("len(ids_of_attribute('soil','fclass'))",(ids_of_attribute('roads','layer')))
-# # print("len(ids_of_attribute('soil','fclass'))",(ids_of_attribute('roads','ref')))
-# # # print(fclass_dict_4_similarity)
-# # # bounding_box=set_bounding_box('Munich')
-# # id_list=ids_of_type('buildings',{'non_area_col': {'fclass': set(), 'name': {"Beauty, n'Nails"}}, 'area_num': None})
-# # print(id_list)
-# theresienstrasse_road_ids = id_list_of_entity("roads with maxspeed higher than 30")
-# print(theresienstrasse_road_ids['id_list'])
-# # print(id_list_explain(theresienstrasse_road_ids,'name'))
-# # print(len(theresienstrasse_road_ids['id_list']))
-# theresienstrasse_road_ids = id_list_of_entity("playground")
-# #
-# print(len(theresienstrasse_road_ids['id_list']))
-# print(set_bounding_box("munich"))
-
-# #
-# start_time = time.time()
-# #
-# print("all_fclass_set",all_fclass_set)
-# # # 调用函数
-# rivers_in_munich = id_list_of_entity('Lager Wasserwirtschaftsamt')
-# print((rivers_in_munich['id_list']))
-# print("len(rivers_in_munich['id_list'])",len(rivers_in_munich['id_list']))
-# #
-# # # 记录结束时间
-# end_time = time.time()
-# # #
-# # # # 计算运行时间
-# elapsed_time = end_time - start_time
-# print(f"Function executed in {elapsed_time:.4f} seconds")
+# # Step 7: Filter the river "Weiße Traun" that meets the stream "Windbach"
+# meeting_weiße_traun_windbach = geo_filter('meets', passing_weiße_traun_tiefenbach['subject'], stream_windbach_id_list)
+# print(meeting_weiße_traun_windbach)
+# # Step 8: Explain the final filtered river
+# weiße_traun_explanation = id_list_explain(meeting_weiße_traun_windbach['subject'], 'name')

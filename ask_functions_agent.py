@@ -587,6 +587,7 @@ For queries that do not involve any geographical relationship, your response sho
         "exist": false,
     }
 }
+For relations like passes through/meets, it should be taken as intersects
 Please ensure accuracy and precision in your responses, as these are critical for correctly interpreting the user's needs.
     """
     if messages == None:

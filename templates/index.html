@@ -65,6 +65,9 @@
     <br>
     <button class="rectangle-btn"  onclick="showNumber('Where are the rivers in Munich')">Where are the rivers</button>
     <!--    <button class="rectangle-btn"  onclick="showNumber('分析我上传的文件')">Upload your ttl file</button>-->
+    <br>
+    <br>
+    <button class="rectangle-btn" id="auto-test-btn" onclick="startAutoTest()">🧪 Start Auto Test</button>
 </div>
 <!--<button onclick="location.href='/question'">Go to Questions</button>-->
 <div class="input-button-container">
@@ -116,6 +119,14 @@
 
 <!-- Loading Spinner -->
 <div class="spinner" id="spinner"></div>
+
+<!-- Test Progress Display -->
+<div id="test-progress" style="display: none; position: fixed; top: 20px; right: 20px; background: rgba(0,0,0,0.8); color: white; padding: 15px; border-radius: 10px; z-index: 10000;">
+    <div id="test-status">Loading test data...</div>
+    <div id="test-counter" style="font-size: 18px; font-weight: bold; margin-top: 5px;">0/0</div>
+    <button id="stop-test-btn" onclick="stopAutoTest()" style="margin-top: 10px; background: #ff4444; color: white; border: none; padding: 5px 10px; border-radius: 5px; cursor: pointer;">Stop Test</button>
+</div>
+
 <script>
     const normal_prompt = `
     You have following tools available to answer user queries, please only write python code:
@@ -742,8 +753,6 @@ If user ask you to draw a diagram, please always use the true variable in previo
             }
 
             function addRequestMessage(message) {
-                // $(".answer .tips").css({"display":"none"});    // 打赏卡隐藏
-                // chatInput.val('');
                 let escapedMessage = escapeHtml(message);  // 对请求message进行转义，防止输入的是html而被浏览器渲染
                 let requestMessageElement = $('<div class="row message-bubble"><img class="chat-icon" src="./static/images/avatar.png"><div class="message-text request">' +  escapedMessage + '</div></div>');
                 chatWindow.append(requestMessageElement);
@@ -858,7 +867,12 @@ If user ask you to draw a diagram, please always use the true variable in previo
 async function process_input(userInput) {
     if (userInput !== "") {
         addRequestMessage(userInput);
-        messages = cut_messages(messages);
+        // Only manipulate messages history if not in auto test mode
+        if (!isTestRunning) {
+            messages = cut_messages(messages);
+            // Add user message to history only if not in test mode
+            messages.push({"role": "user", "content": userInput});
+        }
         document.getElementById('inputField').value = '';
 
         try {
@@ -897,13 +911,59 @@ async function process_input(userInput) {
             // to handle any special formatting that might have been missed.
             addResponseMessage(final_response_text);
 
-            messages.push({ "role": "assistant", "content": final_response_text });
+            // Only push messages to history if not in auto test mode
+            if (!isTestRunning) {
+                messages.push({ "role": "assistant", "content": final_response_text });
+            }
             console.log('Success (stream complete)');
+
+            // Handle auto test continuation
+            if (isTestRunning && testInProgress) {
+                testInProgress = false;
+                currentTestIndex++;
+                
+                if (currentTestIndex < autoTestData.length) {
+                    // Immediately set next question in input field
+                    const nextTest = autoTestData[currentTestIndex];
+                    document.getElementById('inputField').value = nextTest.query;
+                    updateTestProgress();
+                    
+                    // Set flag to indicate next test is ready
+                    window.nextTestReady = true;
+                } else {
+                    // All tests completed
+                    stopAutoTest();
+                    alert('All tests completed successfully!');
+                }
+            }
 
         } catch (error) {
             console.error('Error:', error);
             let lastResponseElement = $(".message-bubble .response").last();
             lastResponseElement.text('An error occurred while fetching the response.');
+            
+            // Handle auto test error
+            if (isTestRunning && testInProgress) {
+                testInProgress = false;
+                console.error(`Test ${currentTestIndex + 1} failed:`, error);
+                currentTestIndex++;
+                
+                // Continue with next test after error
+                if (isTestRunning) {
+                    if (currentTestIndex < autoTestData.length) {
+                        // Immediately set next question in input field
+                        const nextTest = autoTestData[currentTestIndex];
+                        document.getElementById('inputField').value = nextTest.query;
+                        updateTestProgress();
+                        
+                        // Set flag to indicate next test is ready
+                        window.nextTestReady = true;
+                    } else {
+                        stopAutoTest();
+                        alert('All tests completed (some with errors)!');
+                    }
+                }
+            }
         }
     }
 }
@@ -915,6 +975,15 @@ async function process_input(userInput) {
                 document.getElementById('map-container').style.visibility='visible'
                 var userInput = document.getElementById('inputField').value; // 获取文本框的值/
                 process_status=true
+                
+                // Handle auto test continuation when submit is clicked
+                if (isTestRunning && window.nextTestReady) {
+                    // Clear the chat window for next test
+                    $('#chatWindow').empty();
+                    window.nextTestReady = false;
+                    testInProgress = true;
+                }
+                
                 // document.getElementById('confirmButton').disabled=true
                 process_input(userInput)
 
@@ -1069,6 +1138,101 @@ async function process_input(userInput) {
 
     // Close modal when clicking outside of it
     document.getElementById('overlay_upload').onclick = closeModal;
+
+    // Auto Test Variables
+    let autoTestData = [];
+    let currentTestIndex = 0;
+    let isTestRunning = false;
+    let testInProgress = false;
+
+    // Auto Test Functions
+    async function startAutoTest() {
+        if (isTestRunning) {
+            alert('Test is already running!');
+            return;
+        }
+
+        try {
+            // Get test data from backend
+            const response = await fetch('/get_test_data');
+            const result = await response.json();
+
+            if (!result.success) {
+                alert('Failed to load test data: ' + result.error);
+                return;
+            }
+
+            autoTestData = result.data;
+            currentTestIndex = 0;
+            isTestRunning = true;
+            testInProgress = false;
+
+            // Show progress display
+            document.getElementById('test-progress').style.display = 'block';
+            document.getElementById('auto-test-btn').style.display = 'none';
+            
+            updateTestProgress();
+            runNextTest();
+
+        } catch (error) {
+            console.error('Error starting auto test:', error);
+            alert('Error starting auto test: ' + error.message);
+        }
+    }
+
+    function stopAutoTest() {
+        isTestRunning = false;
+        testInProgress = false;
+        document.getElementById('test-progress').style.display = 'none';
+        document.getElementById('auto-test-btn').style.display = 'inline-block';
+        document.getElementById('test-status').textContent = 'Test stopped';
+    }
+
+    function updateTestProgress() {
+        const progressElement = document.getElementById('test-counter');
+        const statusElement = document.getElementById('test-status');
+        
+        progressElement.textContent = `${currentTestIndex + 1}/${autoTestData.length}`;
+        
+        if (currentTestIndex < autoTestData.length) {
+            statusElement.textContent = `Testing: ${autoTestData[currentTestIndex].query.substring(0, 50)}...`;
+        } else {
+            statusElement.textContent = 'All tests completed!';
+        }
+    }
+
+    async function runNextTest() {
+        if (!isTestRunning || currentTestIndex >= autoTestData.length) {
+            stopAutoTest();
+            alert('All tests completed!');
+            return;
+        }
+
+        if (testInProgress) {
+            // Wait a bit if a test is still in progress
+            setTimeout(runNextTest, 1000);
+            return;
+        }
+
+        const currentTest = autoTestData[currentTestIndex];
+        console.log(`Running test ${currentTestIndex + 1}/${autoTestData.length}: ${currentTest.query}`);
+
+        updateTestProgress();
+
+        // Ensure UI is ready
+        document.getElementById('title').style.display = "none";
+        document.getElementById('chatWindow').style.display = 'block';
+        document.getElementById('map-container').style.visibility = 'visible';
+
+        // Set the input and trigger the test
+        document.getElementById('inputField').value = currentTest.query;
+        testInProgress = true;
+
+        // Submit the query
+        await process_input(currentTest.query);
+    }
+
+
 
 </script>
 
