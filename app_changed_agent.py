@@ -80,6 +80,44 @@ def load_geojson_data():
 geojson_data = load_geojson_data()
 
 
+def cleanup_uploaded_table_references():
+    """清理上传表的残留引用"""
+    global col_name_mapping_dict, fclass_dict_4_similarity, name_dict_4_similarity, all_fclass_set, all_name_set
+    
+    try:
+        # 查找所有以uploaded_开头的表名
+        uploaded_tables = [table for table in col_name_mapping_dict.keys() if table.startswith('uploaded_') or 
+                          (isinstance(col_name_mapping_dict.get(table, {}), dict) and 
+                           col_name_mapping_dict[table].get('graph_name', '').startswith('uploaded_'))]
+        
+        for table_name in uploaded_tables:
+            # 清理col_name_mapping_dict
+            if table_name in col_name_mapping_dict:
+                del col_name_mapping_dict[table_name]
+                print(f"Cleaned up {table_name} from col_name_mapping_dict")
+            
+            # 清理session中的引用
+            if 'col_name_mapping_dict' in session and table_name in session['col_name_mapping_dict']:
+                del session['col_name_mapping_dict'][table_name]
+            
+            # 清理fclass_dict_4_similarity
+            if table_name in fclass_dict_4_similarity:
+                # 从all_fclass_set中移除对应的值
+                all_fclass_set -= set(fclass_dict_4_similarity[table_name])
+                del fclass_dict_4_similarity[table_name]
+                print(f"Cleaned up {table_name} from fclass_dict_4_similarity")
+            
+            # 清理name_dict_4_similarity
+            if table_name in name_dict_4_similarity:
+                # 从all_name_set中移除对应的值
+                all_name_set -= set(name_dict_4_similarity[table_name])
+                del name_dict_4_similarity[table_name]
+                print(f"Cleaned up {table_name} from name_dict_4_similarity")
+                
+    except Exception as e:
+        print(f"Error during cleanup: {e}")
+
+
 @app.before_request
 def initialize_session():
     """Initialize session variables if they don't exist."""
@@ -89,7 +127,12 @@ def initialize_session():
             'bounding_coordinates': [48.061625, 48.248098, 11.360777, 11.72291],
             'bounding_wkb': '01030000000100000005000000494C50C3B7B82640D9CEF753E3074840494C50C3B7B82640FC19DEACC11F484019E76F4221722740FC19DEACC11F484019E76F4221722740D9CEF753E3074840494C50C3B7B82640D9CEF753E3074840'
         }
-        print('Session initialized')
+    if 'col_name_mapping_dict' not in session:
+        session['col_name_mapping_dict'] = {}
+    
+    # 清理可能存在的上传表的残留数据
+    cleanup_uploaded_table_references()
+    print('Session initialized')
 
 
 @socketio.on('join')

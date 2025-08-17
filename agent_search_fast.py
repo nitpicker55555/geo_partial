@@ -453,7 +453,96 @@ def id_list_of_entity_fast(query: str, verbose: bool = True, bounding_box: Optio
     else:
         logger.info(f"Using provided bounding_box: {bounding_box}")
     
-    # Step 0: Analyze the query's semantic structure using an LLM
+    # Prepare search data sets first
+    logger.info("Preparing search data sets for exact matching...")
+    tables_to_process = col_name_mapping_dict.keys()
+    
+    current_fclass_set = set()
+    current_name_set = set()
+    current_fclass_dict = {}
+    current_name_dict = {}
+
+    if bounding_box is not None:
+        logger.info(f"Building data sets for tables with bounding box")
+        for table_name in tables_to_process:
+            fclass_set = ids_of_attribute(table_name, specific_col="fclass", bounding_box_coordinates=bounding_box)
+            current_fclass_dict[table_name] = fclass_set
+            current_fclass_set.update(fclass_set)
+            
+            if table_name != 'soil':
+                name_set = ids_of_attribute(table_name, specific_col='name', bounding_box_coordinates=bounding_box)
+                current_name_dict[table_name] = name_set
+                current_name_set.update(name_set)
+    else:
+        logger.info("Using globally pre-loaded data sets.")
+        current_fclass_set = all_fclass_set
+        current_name_set = all_name_set
+        current_fclass_dict = fclass_dict_4_similarity
+        current_name_dict = name_dict_4_similarity
+    
+    # Step -1: Try exact matching first (before LLM analysis)
+    logger.info(f"Step -1: Attempting exact match for query: '{query}'")
+    exact_fclass_matches = set()
+    exact_name_matches = []
+    
+    # Check for exact match in fclass
+    if query in current_fclass_set:
+        exact_fclass_matches.add(query)
+        logger.info(f"Found exact fclass match: '{query}'")
+    
+    # Check for exact match in name
+    if query in current_name_set:
+        exact_name_matches.append(query)
+        logger.info(f"Found exact name match: '{query}'")
+    
+    # Also check the original query (with original case)
+    if query_original in current_fclass_set:
+        exact_fclass_matches.add(query_original)
+        logger.info(f"Found exact fclass match (original case): '{query_original}'")
+    
+    if query_original in current_name_set:
+        exact_name_matches.append(query_original)
+        logger.info(f"Found exact name match (original case): '{query_original}'")
+    
+    # If we found exact matches, use them directly without LLM analysis
+    if exact_fclass_matches or exact_name_matches:
+        logger.info(f"Exact matches found! Skipping LLM analysis. fclass: {exact_fclass_matches}, name: {exact_name_matches}")
+        
+        # Find relevant tables for exact matches
+        table_fclass_dicts = find_keys_by_values(current_fclass_dict, exact_fclass_matches)
+        table_name_dicts = find_keys_by_values(current_name_dict, exact_name_matches)
+        
+        all_id_lists = []
+        
+        # Process fclass exact matches
+        for table_name in table_fclass_dicts.keys():
+            fclass_list = table_fclass_dicts[table_name]
+            logger.info(f"Table {table_name}: Getting exact fclass results for {len(fclass_list)} items.")
+            each_id_list = ids_of_type(table_name, {
+                'non_area_col': {'fclass': set(fclass_list), 'name': set()},
+                'area_num': None
+            }, bounding_box=bounding_box)
+            all_id_lists.append(each_id_list)
+        
+        # Process name exact matches
+        for table_name in table_name_dicts.keys():
+            name_list = table_name_dicts[table_name]
+            logger.info(f"Table {table_name}: Getting exact name results for {len(name_list)} items.")
+            each_id_list = ids_of_type(table_name, {
+                'non_area_col': {'fclass': set(), 'name': set(name_list)},
+                'area_num': None
+            }, bounding_box=bounding_box)
+            all_id_lists.append(each_id_list)
+        
+        # Merge and return results
+        if all_id_lists:
+            merged_result = merge_dicts(all_id_lists)
+            final_count = len(merged_result.get('id_list', {}))
+            logger.info(f"Exact match completed. Returning {final_count} results.")
+            return merged_result
+    
+    # Step 0: If no exact match, proceed with LLM analysis
+    logger.info("No exact matches found. Proceeding with LLM analysis...")
     logger.info("Step 0: Analyzing query structure with LLM")
     analysis = _analyze_query_llm(query_original, logger)
     logger.info(f"LLM analysis result: {analysis}")
@@ -471,32 +560,18 @@ def id_list_of_entity_fast(query: str, verbose: bool = True, bounding_box: Optio
             'area_num': None
         }, bounding_box=bounding_box)
 
-    # Update search sets based on bounding box or table scope
-    logger.info("Preparing search data sets...")
-    tables_to_process = [table_scope] if table_scope else col_name_mapping_dict.keys()
-    
-    current_fclass_set = set()
-    current_name_set = set()
-    current_fclass_dict = {}
-    current_name_dict = {}
-
-    if bounding_box is not None or table_scope:
-        logger.info(f"Building data sets for tables: {list(tables_to_process)} with bounding box: {bool(bounding_box)}")
-        for table_name in tables_to_process:
-            fclass_set = ids_of_attribute(table_name, specific_col="fclass", bounding_box_coordinates=bounding_box)
-            current_fclass_dict[table_name] = fclass_set
+    # If table_scope is specified, we might need to update the data sets
+    if table_scope and table_scope not in current_fclass_dict:
+        logger.info(f"Table scope '{table_scope}' specified but not in current data sets. Updating...")
+        if bounding_box is not None:
+            fclass_set = ids_of_attribute(table_scope, specific_col="fclass", bounding_box_coordinates=bounding_box)
+            current_fclass_dict[table_scope] = fclass_set
             current_fclass_set.update(fclass_set)
             
-            if table_name != 'soil':
-                name_set = ids_of_attribute(table_name, specific_col='name', bounding_box_coordinates=bounding_box)
-                current_name_dict[table_name] = name_set
+            if table_scope != 'soil':
+                name_set = ids_of_attribute(table_scope, specific_col='name', bounding_box_coordinates=bounding_box)
+                current_name_dict[table_scope] = name_set
                 current_name_set.update(name_set)
-    else:
-        logger.info("Using globally pre-loaded data sets.")
-        current_fclass_set = all_fclass_set
-        current_name_set = all_name_set
-        current_fclass_dict = fclass_dict_4_similarity
-        current_name_dict = name_dict_4_similarity
     
     # Step 1 & 2: Perform similarity search based on extracted terms
     all_fclass_matches = set()

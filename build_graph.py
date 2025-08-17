@@ -1,8 +1,11 @@
 import psycopg2
+# pyright: reportArgumentType=false
 import networkx as nx
 from tqdm import tqdm
 from networkx.readwrite import json_graph
 import json
+from neo4j import GraphDatabase
+
 def fetch_table_data(conn, table_name):
     """
     从表中读取 fclass 和 name 列数据。
@@ -31,9 +34,17 @@ def build_graph_from_tables(conn, table_names):
     """
     graph = nx.DiGraph()
 
+    # === Add a single Database node ===
+    database_node = "database"
+    graph.add_node(database_node, type="database")
+
     for table_name in tqdm(table_names, desc="Processing Tables"):
         # 添加表名称为节点
         graph.add_node(table_name, type="table")
+
+        # Database <-> Table 双向边
+        graph.add_edge(database_node, table_name, edge_type="database_table")
+        graph.add_edge(table_name, database_node, edge_type="table_database")
 
         # 从表中获取数据
 
@@ -63,8 +74,10 @@ def build_graph_from_tables(conn, table_names):
             if name!="":
                 graph.add_node(name, type="name")
             # 添加 fclass 到 name 的边
-                graph.add_edge(fclass, name, edge_type="fclass_name")
-                graph.add_edge(name, fclass, edge_type="fclass_name_reverse")
+            graph.add_edge(fclass, name, edge_type="fclass_name")
+            graph.add_edge(name, fclass, edge_type="fclass_name_reverse")
+            # Name -> Table 边
+            graph.add_edge(name, table_name, edge_type="name_table")
             # 添加表名称到 fclass 的边
             graph.add_edge(table_name, fclass, edge_type="table_fclass")
             graph.add_edge(fclass, table_name, edge_type="table_fclass_reverse")
@@ -89,16 +102,80 @@ if __name__ == "__main__":
         # 打印图的信息
         print(f"Graph has {graph.number_of_nodes()} nodes and {graph.number_of_edges()} edges.")
 
-        # 将图保存到文件中（作为 JSON 格式存储）
-        graph_data = json_graph.node_link_data(graph)
-        with open("graph2.json", "w") as f:
-            json.dump(graph_data, f, indent=2)
+        # === 将图同步到 Neo4j ===
+        def push_graph_to_neo4j(g, uri, user, pwd, batch_size: int = 1000):
+            """高速批量写入 NetworkX 图到 Neo4j，使用 UNWIND 批处理。"""
+            from collections import defaultdict
 
-        # 可视化（如果需要）
-        # import matplotlib.pyplot as plt
-        # pos = nx.spring_layout(graph)
-        # nx.draw(graph, pos, with_labels=True, node_size=500, font_size=10)
-        # plt.show()
+            driver = GraphDatabase.driver(uri, auth=(user, pwd))
+
+            # 映射 node.type / edge_type 到标签或关系类型
+            type_label_map = {
+                "database": "Database",
+                "table": "Table",
+                "fclass": "Fclass",
+                "name": "Name",
+            }
+            edge_rel_map = {
+                "database_table": "DATABASE_TABLE",
+                "table_database": "TABLE_DATABASE",
+                "table_fclass": "TABLE_FCLASS",
+                "table_fclass_reverse": "FCLASS_TABLE",
+                "fclass_name": "FCLASS_NAME",
+                "fclass_name_reverse": "NAME_FCLASS",
+                "name_table": "NAME_TABLE",
+            }
+
+            def chunks(seq, size):
+                """Yield successive size-d chunks from seq."""
+                for i in range(0, len(seq), size):
+                    yield seq[i : i + size]
+
+            with driver.session() as session:
+                # 1. 约束：一次性创建（幂等）
+                for label in set(type_label_map.values()):
+                    session.run(  # type: ignore
+                        f"CREATE CONSTRAINT IF NOT EXISTS FOR (n:{label}) REQUIRE n.value IS UNIQUE"
+                    )
+
+                # 2. 批量写入节点
+                nodes_by_label: dict[str, list[str]] = defaultdict(list)
+                for node, data in g.nodes(data=True):
+                    label = type_label_map.get(data.get("type"), "Unknown")
+                    nodes_by_label[label].append(str(node))
+
+                for label, values in nodes_by_label.items():
+                    query = f"UNWIND $rows AS val MERGE (n:{label} {{value: val}})"
+                    for batch in tqdm(list(chunks(values, batch_size)), desc=f"Nodes:{label}"):
+                        session.run(query, rows=batch)  # type: ignore
+
+                # 3. 批量写入关系
+                edge_groups: dict[tuple[str, str, str], list[tuple[str, str]]] = defaultdict(list)
+                for source, target, data in g.edges(data=True):
+                    rel_type = edge_rel_map.get(data.get("edge_type"), "RELATED")
+                    s_label = type_label_map.get(g.nodes[source].get("type"), "Unknown")
+                    t_label = type_label_map.get(g.nodes[target].get("type"), "Unknown")
+                    edge_groups[(s_label, t_label, rel_type)].append((str(source), str(target)))
+
+                for (s_label, t_label, rel_type), pairs in edge_groups.items():
+                    query = (
+                        f"UNWIND $rows AS row "
+                        f"MATCH (a:{s_label} {{value: row.s}}) "
+                        f"MATCH (b:{t_label} {{value: row.t}}) "
+                        f"MERGE (a)-[:{rel_type}]->(b)"
+                    )
+                    for batch in tqdm(list(chunks(pairs, batch_size)), desc=f"Edges:{rel_type}"):
+                        session.run(query, rows=[{"s": s, "t": t} for s, t in batch])  # type: ignore
+
+            driver.close()
+
+        # Neo4j 连接信息
+        neo4j_uri = "bolt://localhost:7687"
+        neo4j_user = "neo4j"
+        neo4j_password = "9417941pqpqpq"
+
+        push_graph_to_neo4j(graph, neo4j_uri, neo4j_user, neo4j_password)
+        # === Neo4j 同步结束 ===
 
     except Exception as e:
         print(f"Error: {e}")

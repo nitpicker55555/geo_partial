@@ -906,8 +906,9 @@ def get_uploaded_column_values(column_name):
 
 
 def del_uploaded_sql():
-    # global col_name_mapping_dict
-
+    from flask import session
+    global col_name_mapping_dict
+    
     cur.execute("""
         SELECT tablename 
         FROM pg_tables 
@@ -915,6 +916,7 @@ def del_uploaded_sql():
     """)
 
     tables = cur.fetchall()
+    uploaded_table_names = []
 
     # 遍历并删除每个表
     for table in tables:
@@ -922,9 +924,50 @@ def del_uploaded_sql():
         drop_query = f'DROP TABLE IF EXISTS public."{table_name}" CASCADE'
         cur.execute(drop_query)
         print(f"Dropped table: {table_name}")
+        
+        # 提取表名（去掉uploaded_前缀）
+        if table_name.startswith('uploaded_'):
+            clean_table_name = table_name[9:]  # 去掉'uploaded_'前缀
+            uploaded_table_names.append(clean_table_name)
 
-    # 提交更改并关闭连接
+    # 提交数据库更改
     conn.commit()
+    
+    # 清理内存中的数据结构
+    try:
+        # 导入需要清理的全局变量
+        import ask_functions_agent
+        
+        for table_name in uploaded_table_names:
+            # 清理全局col_name_mapping_dict
+            if table_name in col_name_mapping_dict:
+                del col_name_mapping_dict[table_name]
+                print(f"Removed {table_name} from col_name_mapping_dict")
+            
+            # 清理session中的col_name_mapping_dict
+            if 'col_name_mapping_dict' in session and table_name in session['col_name_mapping_dict']:
+                del session['col_name_mapping_dict'][table_name]
+                print(f"Removed {table_name} from session col_name_mapping_dict")
+            
+            # 清理fclass_dict_4_similarity
+            if hasattr(ask_functions_agent, 'fclass_dict_4_similarity') and table_name in ask_functions_agent.fclass_dict_4_similarity:
+                # 先从all_fclass_set中移除这些值
+                if hasattr(ask_functions_agent, 'all_fclass_set'):
+                    ask_functions_agent.all_fclass_set -= set(ask_functions_agent.fclass_dict_4_similarity[table_name])
+                del ask_functions_agent.fclass_dict_4_similarity[table_name]
+                print(f"Removed {table_name} from fclass_dict_4_similarity")
+            
+            # 清理name_dict_4_similarity
+            if hasattr(ask_functions_agent, 'name_dict_4_similarity') and table_name in ask_functions_agent.name_dict_4_similarity:
+                # 先从all_name_set中移除这些值
+                if hasattr(ask_functions_agent, 'all_name_set'):
+                    ask_functions_agent.all_name_set -= set(ask_functions_agent.name_dict_4_similarity[table_name])
+                del ask_functions_agent.name_dict_4_similarity[table_name]
+                print(f"Removed {table_name} from name_dict_4_similarity")
+                
+    except Exception as e:
+        print(f"Error cleaning up memory structures: {e}")
+        # 即使清理失败，也不影响数据库表的删除
 
 
 def get_nearest_point(wkt_list,location1,location2 ):
